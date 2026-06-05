@@ -3,21 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speakerdust - Cloudflare Real-Time Multiplayer Arcade</title>
-    <meta name="description" content="Play Speakerdust, a real-time multiplayer arcade game running serverless on Cloudflare Workers, Durable Objects, and D1 database.">
-    <!-- Google Fonts -->
+    <title>Speakerdust - Space Shooter Pixel Art Multijugador</title>
+    <meta name="description" content="Speakerdust: un shooter espacial multijugador en tiempo real con gráficos Pixel Art dibujados con código, potenciado por Cloudflare Durable Objects.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="ui-layer">
-        <h1 id="game-title">Speakerdust</h1>
-        <p id="status" class="connecting">Conectando al servidor...</p>
+    <div id="hud">
+        <div id="hud-left">
+            <div class="hud-label">PUNTOS</div>
+            <div id="score">000000</div>
+        </div>
+        <div id="hud-center">
+            <div id="game-title">SPEAKERDUST</div>
+            <div id="wave-info">OLEADA <span id="wave-num">1</span></div>
+        </div>
+        <div id="hud-right">
+            <div class="hud-label">JUGADORES</div>
+            <div id="player-count">1</div>
+        </div>
     </div>
-    <div class="canvas-container">
-        <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="canvas-wrap">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <div id="status-bar">
+        <div id="connection-status" class="status-connecting">◆ CONECTANDO...</div>
+        <div id="controls-hint">WASD: MOVER &nbsp;|&nbsp; RATÓN: APUNTAR &nbsp;|&nbsp; CLIC: DISPARAR</div>
+    </div>
+
+    <div id="screen-overlay" class="hidden">
+        <div id="overlay-content">
+            <div id="overlay-title">GAME OVER</div>
+            <div id="overlay-score">0</div>
+            <button id="restart-btn">[ REINICIAR ]</button>
+        </div>
     </div>
 
     <script src="game.js"></script>
