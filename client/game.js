@@ -21,8 +21,8 @@ function connect() {
     socket = new WebSocket(`${WORKER_URL}/room/${ROOM_ID}`);
 
     socket.addEventListener('open', () => {
-        statusText.textContent = "Connected to " + ROOM_ID;
-        statusText.style.color = "#4ecca3";
+        statusText.textContent = "CONECTADO A LA SALA: " + ROOM_ID;
+        statusText.className = "connected";
         // Enviar estado inicial
         sendState();
     });
@@ -39,8 +39,8 @@ function connect() {
     });
 
     socket.addEventListener('close', () => {
-        statusText.textContent = "Disconnected. Reconnecting...";
-        statusText.style.color = "#e94560";
+        statusText.textContent = "DESCONECTADO. RECONECTANDO...";
+        statusText.className = "disconnected";
         setTimeout(connect, 2000);
     });
 }
