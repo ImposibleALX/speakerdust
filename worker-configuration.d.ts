@@ -7,7 +7,8 @@ declare namespace Cloudflare {
 		durableNamespaces: "MyDurableObject";
 	}
 	interface Env {
-		MY_DURABLE_OBJECT: DurableObjectNamespace<import("./src/index").MyDurableObject>;
+		GAME_ROOM: DurableObjectNamespace<import("./src/GameRoom").GameRoom>;
+		DB: D1Database;
 	}
 }
 interface Env extends Cloudflare.Env {}
