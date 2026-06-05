@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speakerdust - Space Shooter Pixel Art Multijugador</title>
-    <meta name="description" content="Speakerdust: un shooter espacial multijugador en tiempo real con gráficos Pixel Art dibujados con código, potenciado por Cloudflare Durable Objects.">
+    <title>Speakerdust – Space Warfare Pixel Art</title>
+    <meta name="description" content="Speakerdust: shooter espacial multijugador en tiempo real con naves capitales pixel art y Cloudflare Durable Objects.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
@@ -21,9 +21,20 @@
             <div id="wave-info">OLEADA <span id="wave-num">1</span></div>
         </div>
         <div id="hud-right">
-            <div class="hud-label">JUGADORES</div>
-            <div id="player-count">1</div>
+            <div id="hud-right-top">
+                <div>
+                    <div class="hud-label">JUGADORES</div>
+                    <div id="player-count">1</div>
+                </div>
+            </div>
         </div>
+    </div>
+
+    <div id="weapon-bar">
+        <div class="hud-label">ARMA</div>
+        <div id="weapon-display">▶ LASER</div>
+        <div class="hud-label" style="margin-top:6px">ESCUDO</div>
+        <div id="shield-display">◈◈◈</div>
     </div>
 
     <div id="canvas-wrap">
@@ -32,13 +43,13 @@
 
     <div id="status-bar">
         <div id="connection-status" class="status-connecting">◆ CONECTANDO...</div>
-        <div id="controls-hint">WASD: MOVER &nbsp;|&nbsp; RATÓN: APUNTAR &nbsp;|&nbsp; CLIC: DISPARAR</div>
+        <div id="controls-hint">WASD: MOVER &nbsp;|&nbsp; RATÓN: APUNTAR &nbsp;|&nbsp; CLIC/ESPACIO: DISPARAR &nbsp;|&nbsp; Q/TAB: ARMA</div>
     </div>
 
     <div id="screen-overlay" class="hidden">
         <div id="overlay-content">
             <div id="overlay-title">GAME OVER</div>
-            <div id="overlay-score">0</div>
+            <div id="overlay-score">PUNTOS: 000000</div>
             <button id="restart-btn">[ REINICIAR ]</button>
         </div>
     </div>

@@ -1,50 +1,42 @@
 // ════════════════════════════════════════════════════════
-//  SPEAKERDUST  –  Pixel Art Space Ships Client Engine
+//  SPEAKERDUST — Space Warfare Client
+//  Auto-connects to production OR localhost
 // ════════════════════════════════════════════════════════
 
-// ── Config ──────────────────────────────────────────────
-const WORKER_URL      = "ws://localhost:8787";
-const ROOM_ID         = "sala-1";
-const SHOOT_COOLDOWN  = 180;   // ms between shots
-const STAR_COUNT      = 220;
-const NEBULA_COUNT    = 5;
-const PARTICLE_LIFE   = 32;
+// ── Detect environment ───────────────────────────────────
+const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1"
+              || location.hostname === "" || location.protocol === "file:";
+
+const WORKER_WS  = IS_LOCAL
+  ? "ws://localhost:8787"
+  : "wss://speakerdust.soyimposibleyt.workers.dev";
+const ROOM_ID    = "sala-1";
 
 // ── Canvas ───────────────────────────────────────────────
 const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("gameCanvas"));
 const ctx    = canvas.getContext("2d");
-
 let WORLD_W = 1200, WORLD_H = 800;
 
 function resizeCanvas() {
     const hudH  = document.getElementById("hud").offsetHeight;
     const statH = document.getElementById("status-bar").offsetHeight;
-    const aw = window.innerWidth;
-    const ah = window.innerHeight - hudH - statH;
-    const scale = Math.min(aw / WORLD_W, ah / WORLD_H);
+    const scale = Math.min(window.innerWidth / WORLD_W, (window.innerHeight - hudH - statH) / WORLD_H);
     canvas.width  = WORLD_W;
     canvas.height = WORLD_H;
-    canvas.style.width  = Math.floor(WORLD_W * scale) + "px";
-    canvas.style.height = Math.floor(WORLD_H * scale) + "px";
+    canvas.style.width    = Math.floor(WORLD_W * scale) + "px";
+    canvas.style.height   = Math.floor(WORLD_H * scale) + "px";
     canvas.style.marginTop = hudH + "px";
 }
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 // ════════════════════════════════════════════════════════
-//  PIXEL-ART SHIP RENDERER
-//  Each ship is a 2D grid. Pixel values:
-//   0 = transparent
-//   1 = hull (body)
-//   2 = cockpit / bridge
-//   3 = engine glow
-//   4 = weapons / cannons
-//   5 = shield / trim
-//   6 = detail / panel lines
+//  PIXEL-ART RENDERER
+//  0=transparent 1=hull 2=bridge 3=engine 4=weapon
+//  5=trim 6=panel 7=wing-accent 8=window
 // ════════════════════════════════════════════════════════
-function drawPixelShip(grid, cx, cy, angle, palette, ps) {
-    const rows = grid.length;
-    const cols = grid[0].length;
+function drawPixelShip(grid, cx, cy, angle, pal, ps) {
+    const rows = grid.length, cols = grid[0].length;
     ctx.save();
     ctx.translate(Math.round(cx), Math.round(cy));
     ctx.rotate(angle + Math.PI / 2);
@@ -53,179 +45,197 @@ function drawPixelShip(grid, cx, cy, angle, palette, ps) {
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
             const v = grid[r][c];
-            if (!v) continue;
-            ctx.fillStyle = palette[v] || "#fff";
+            if (!v || !pal[v]) continue;
+            ctx.fillStyle = pal[v];
             ctx.fillRect(ox + c * ps, oy + r * ps, ps, ps);
         }
     }
     ctx.restore();
 }
 
-// ── Player ship: Heavy Cruiser (15×19) ───────────────────
-// Top-down heavy cruiser with wide wings, dual cannons, large bridge
-const SHIP_CRUISER = [
-    [0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],
-    [0,0,0,0,0,0,1,2,1,0,0,0,0,0,0],
-    [0,0,0,0,0,1,1,2,1,1,0,0,0,0,0],
-    [0,0,0,0,1,1,2,2,2,1,1,0,0,0,0],
-    [0,0,4,0,1,1,2,6,2,1,1,0,4,0,0],
-    [0,4,4,1,1,1,1,1,1,1,1,1,4,4,0],
-    [4,4,1,1,5,1,1,1,1,1,5,1,1,4,4],
-    [4,1,1,1,1,1,1,1,1,1,1,1,1,1,4],
-    [1,1,5,1,1,1,1,1,1,1,1,1,5,1,1],
-    [1,1,1,1,1,1,6,1,6,1,1,1,1,1,1],
-    [1,1,5,1,1,1,1,1,1,1,1,1,5,1,1],
-    [0,1,1,1,1,1,1,1,1,1,1,1,1,1,0],
-    [0,0,1,1,5,1,1,1,1,1,5,1,1,0,0],
-    [0,0,4,1,1,1,1,1,1,1,1,1,4,0,0],
-    [0,0,4,4,1,1,1,1,1,1,1,4,4,0,0],
-    [0,0,0,4,1,1,1,1,1,1,1,4,0,0,0],
-    [0,0,0,0,3,3,1,1,1,3,3,0,0,0,0],
-    [0,0,0,0,3,0,3,1,3,0,3,0,0,0,0],
-    [0,0,0,0,0,0,3,3,3,0,0,0,0,0,0],
+// ════════════════════════════════════════════════════════
+//  SHIP BITMAPS  (top-down view, facing up = row 0)
+// ════════════════════════════════════════════════════════
+
+// ── Player: CORVETTE CLASS (13×17) ───────────────────────
+// Sleek needle-nose command ship with swept wings
+const SHIP_PLAYER = [
+    [0,0,0,0,0,0,2,0,0,0,0,0,0],
+    [0,0,0,0,0,1,2,1,0,0,0,0,0],
+    [0,0,0,0,1,1,2,1,1,0,0,0,0],
+    [0,0,0,0,1,2,2,2,1,0,0,0,0],
+    [0,0,4,1,1,1,1,1,1,1,4,0,0],
+    [0,4,4,1,1,5,1,5,1,1,4,4,0],
+    [4,4,1,1,1,1,1,1,1,1,1,4,4],
+    [4,7,1,1,5,1,6,1,5,1,1,7,4],
+    [4,7,1,1,1,1,6,1,1,1,1,7,4],
+    [0,4,1,1,5,1,1,1,5,1,1,4,0],
+    [0,0,4,1,1,1,1,1,1,1,4,0,0],
+    [0,0,0,1,1,1,8,8,1,1,1,0,0],
+    [0,0,0,4,1,1,1,1,1,1,4,0,0],
+    [0,0,0,4,4,1,1,1,4,4,0,0,0],
+    [0,0,0,0,3,3,1,3,3,0,0,0,0],
+    [0,0,0,0,3,0,3,0,3,0,0,0,0],
+    [0,0,0,0,0,0,3,0,0,0,0,0,0],
 ];
 
-// ── Enemy ship: Dreadnought (13×16) ──────────────────────
-// Menacing angular dreadnought with forward guns and jagged wings
-const SHIP_DREAD = [
-    [0,0,0,0,0,4,4,4,0,0,0,0,0],
-    [0,0,0,0,4,4,6,4,4,0,0,0,0],
-    [0,0,0,4,4,1,2,1,4,4,0,0,0],
-    [0,0,4,1,1,1,2,1,1,1,4,0,0],
+// ── Enemy 1: SCOUT INTERCEPTOR (9×11) ───────────────────
+// Fast, angular, sharp wings
+const SHIP_SCOUT = [
+    [0,0,0,0,4,0,0,0,0],
+    [0,0,0,0,2,0,0,0,0],
+    [0,0,0,1,2,1,0,0,0],
+    [0,0,4,1,1,1,4,0,0],
+    [0,4,4,1,5,1,4,4,0],
+    [4,4,1,1,1,1,1,4,4],
+    [4,1,1,6,1,6,1,1,4],
+    [0,0,1,1,1,1,1,0,0],
+    [0,0,3,1,1,1,3,0,0],
+    [0,0,3,0,1,0,3,0,0],
+    [0,0,0,0,3,0,0,0,0],
+];
+
+// ── Enemy 2: CRUISER WARSHIP (13×14) ────────────────────
+// Wide, armored, triple-cannon fore
+const SHIP_CRUISER_ENEMY = [
+    [0,0,0,4,0,4,4,4,0,4,0,0,0],
+    [0,0,4,4,4,4,2,4,4,4,4,0,0],
+    [0,4,4,1,1,1,2,1,1,1,4,4,0],
     [0,4,1,1,1,1,2,1,1,1,1,4,0],
-    [4,1,1,5,1,1,1,1,1,5,1,1,4],
+    [4,4,1,1,5,1,1,1,5,1,1,4,4],
     [4,1,1,1,1,1,1,1,1,1,1,1,4],
     [4,1,5,1,1,6,1,6,1,1,5,1,4],
     [4,1,1,1,1,1,1,1,1,1,1,1,4],
+    [4,4,1,1,5,1,1,1,5,1,1,4,4],
     [0,4,1,1,1,1,1,1,1,1,1,4,0],
-    [0,0,4,1,1,1,1,1,1,1,4,0,0],
+    [0,0,4,4,1,1,1,1,1,4,4,0,0],
     [0,0,0,3,3,1,1,1,3,3,0,0,0],
     [0,0,0,3,0,3,1,3,0,3,0,0,0],
     [0,0,0,0,0,3,3,3,0,0,0,0,0],
-    [0,0,0,0,0,0,3,0,0,0,0,0,0],
-    [0,0,0,0,0,0,3,0,0,0,0,0,0],
 ];
 
-// ── Color palettes ────────────────────────────────────────
-function makeCruiserPalette(hsl) {
-    // hsl like "180,80%,60%" – base hull hue
-    const [h, s, l] = hsl.split(/[,%]/).map(Number);
+// ── Enemy 3: CAPITAL DREADNOUGHT (17×19) ────────────────
+// Massive fortress ship with heavy guns and orbital thrusters
+const SHIP_CAPITAL = [
+    [0,0,0,0,0,4,0,0,4,0,0,4,0,0,0,0,0],
+    [0,0,0,0,4,4,4,4,4,4,4,4,4,0,0,0,0],
+    [0,0,0,4,4,1,1,2,2,2,1,1,4,4,0,0,0],
+    [0,0,4,4,1,1,1,2,2,2,1,1,1,4,4,0,0],
+    [0,4,4,1,1,5,1,2,2,2,1,5,1,1,4,4,0],
+    [4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,4,4],
+    [4,1,1,5,1,1,6,1,1,1,6,1,1,5,1,1,4],
+    [4,1,1,1,1,1,1,1,8,1,1,1,1,1,1,1,4],
+    [4,7,1,1,1,1,1,1,1,1,1,1,1,1,1,7,4],
+    [4,7,1,1,6,1,1,1,1,1,1,1,6,1,1,7,4],
+    [4,7,1,1,1,1,1,1,1,1,1,1,1,1,1,7,4],
+    [4,1,1,5,1,1,6,1,1,1,6,1,1,5,1,1,4],
+    [4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,4,4],
+    [0,4,4,1,1,5,1,1,1,1,1,5,1,1,4,4,0],
+    [0,0,4,4,1,1,1,1,1,1,1,1,1,4,4,0,0],
+    [0,0,0,4,4,3,3,1,1,1,3,3,4,4,0,0,0],
+    [0,0,0,0,4,3,0,3,1,3,0,3,4,0,0,0,0],
+    [0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0],
+];
+
+// ── Palettes ──────────────────────────────────────────────
+function makePlayerPalette(hsl) {
+    const [h, s, l] = hsl;
     return {
-        1: `hsl(${h},${s}%,${l}%)`,          // hull
-        2: `hsl(${h},${s-10}%,${Math.min(l+28,95)}%)`, // bridge – lighter
-        3: `hsl(30,100%,70%)`,                // engine
-        4: `hsl(${h+30},${s}%,${Math.max(l-18,10)}%)`, // weapons – darker accent
-        5: `hsl(${h},${s-20}%,${l+15}%)`,    // shield trim – lighter
-        6: `hsl(${h},${s}%,${Math.max(l-25,5)}%)`,     // panel lines – dark
+        1: `hsl(${h},${s}%,${l}%)`,
+        2: `hsl(${h},${s-10}%,${Math.min(l+30,95)}%)`,
+        3: "#ff9030",
+        4: `hsl(${(h+40)%360},${s}%,${Math.max(l-15,10)}%)`,
+        5: `hsl(${h},${s-15}%,${l+18}%)`,
+        6: `hsl(${h},${s}%,${Math.max(l-28,5)}%)`,
+        7: `hsl(${(h+20)%360},${s+5}%,${l+10}%)`,
+        8: "#a0eeff",
     };
 }
 
-const DREAD_PALETTE = {
-    1: "#8b0030",   // hull – deep crimson
-    2: "#cc0040",   // bridge – brighter
-    3: "#ff4400",   // engine – orange
-    4: "#ff0060",   // weapons – hot pink-red
-    5: "#ff6090",   // trim
-    6: "#440010",   // dark panels
+const PAL_SCOUT = {
+    1: "#c0003c", 2: "#ff3060", 3: "#ff6600", 4: "#ff0060", 5: "#ff80a0", 6: "#600020", 7: "#ff4070", 8: "#ffaacc",
+};
+const PAL_CRUISER_ENEMY = {
+    1: "#5c0099", 2: "#9900cc", 3: "#ff6600", 4: "#cc00ff", 5: "#bb55ff", 6: "#2a0044", 7: "#dd88ff", 8: "#e0aaff",
+};
+const PAL_CAPITAL = {
+    1: "#1a2a66", 2: "#3355cc", 3: "#ff6600", 4: "#ff3355", 5: "#4477ee", 6: "#0a1030", 7: "#5588ff", 8: "#88bbff",
 };
 
 // ════════════════════════════════════════════════════════
-//  PROJECTILES
-//  Player fires blue plasma bolts, enemies fire red orbs
+//  WEAPONS HUD
 // ════════════════════════════════════════════════════════
-function drawBullet(b, isPlayer) {
-    ctx.save();
-    ctx.translate(Math.round(b.x), Math.round(b.y));
-    ctx.rotate(b.angle ?? 0);
-    if (isPlayer) {
-        // Plasma bolt – elongated glowing bar
-        ctx.shadowBlur  = 12;
-        ctx.shadowColor = "#00e5ff";
-        // Core
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(-2, -7, 4, 14);
-        // Glow layer
-        ctx.globalAlpha = 0.45;
-        ctx.fillStyle = "#00e5ff";
-        ctx.fillRect(-4, -9, 8, 18);
-        ctx.globalAlpha = 1;
-    } else {
-        // Enemy orb
-        ctx.shadowBlur  = 10;
-        ctx.shadowColor = "#ff2060";
-        ctx.fillStyle = "#ff2060";
-        ctx.fillRect(-4, -4, 8, 8);
-        ctx.globalAlpha = 0.4;
-        ctx.fillStyle = "#ff80a0";
-        ctx.fillRect(-6, -6, 12, 12);
-        ctx.globalAlpha = 1;
-    }
-    ctx.restore();
+const WEAPON_COLORS = { laser: "#00e5ff", spread: "#a8ff78", missile: "#ff9030" };
+const WEAPON_ICONS  = { laser: "▶ LASER", spread: "≫ SPREAD", missile: "⊕ MISSILE" };
+
+function drawWeaponHUD(weapon) {
+    const el = document.getElementById("weapon-display");
+    if (!el) return;
+    el.textContent = WEAPON_ICONS[weapon] || "";
+    el.style.color = WEAPON_COLORS[weapon] || "#fff";
+    el.style.textShadow = `0 0 10px ${WEAPON_COLORS[weapon]}`;
+}
+
+function drawShieldHUD(shield) {
+    const el = document.getElementById("shield-display");
+    if (!el) return;
+    el.textContent = "◈".repeat(shield) + "◇".repeat(Math.max(0, 3 - shield));
+    el.style.color = shield > 1 ? "#4af" : shield === 1 ? "#fa0" : "#f44";
 }
 
 // ════════════════════════════════════════════════════════
-//  BACKGROUND – Deep space with stars and nebulae
+//  BACKGROUND
 // ════════════════════════════════════════════════════════
-const stars = Array.from({ length: STAR_COUNT }, () => ({
-    x:     Math.random() * 1200,
-    y:     Math.random() * 800,
-    size:  Math.random() < 0.05 ? 2 : 1,
-    speed: Math.random() * 0.5 + 0.1,
+const stars = Array.from({ length: 240 }, () => ({
+    x: Math.random() * 1200, y: Math.random() * 800,
+    size: Math.random() < 0.06 ? 2 : 1,
+    speed: Math.random() * 0.55 + 0.08,
     alpha: Math.random() * 0.6 + 0.3,
-    twinkle: Math.random() * Math.PI * 2,
-    twinkleSpeed: Math.random() * 0.06 + 0.02,
+    tw: Math.random() * Math.PI * 2,
+    tws: Math.random() * 0.05 + 0.015,
 }));
 
-// Pre-rendered nebula blobs (drawn once, used as offscreen canvas)
-let nebulasReady = false;
 const nebOffscreen = document.createElement("canvas");
-nebOffscreen.width  = 1200;
-nebOffscreen.height = 800;
+nebOffscreen.width = 1200; nebOffscreen.height = 800;
+let nebBuilt = false;
+
 function buildNebulas() {
     const nc = nebOffscreen.getContext("2d");
-    const nebulas = [
-        { x: 200,  y: 150, r: 220, h: 200, a: 0.07 },
-        { x: 900,  y: 600, r: 260, h: 260, a: 0.06 },
-        { x: 600,  y: 400, r: 180, h: 180, a: 0.04 },
-        { x: 1050, y: 180, r: 160, h: 320, a: 0.06 },
-        { x: 100,  y: 650, r: 200, h: 140, a: 0.05 },
+    const defs = [
+        { x: 200, y: 150, r: 240, h: 195, a: 0.08 },
+        { x: 950, y: 620, r: 280, h: 270, a: 0.07 },
+        { x: 600, y: 400, r: 200, h: 330, a: 0.05 },
+        { x: 100, y: 650, r: 210, h: 150, a: 0.06 },
+        { x: 1080, y: 200, r: 180, h: 20,  a: 0.06 },
     ];
-    for (const n of nebulas) {
-        const g = nc.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
-        g.addColorStop(0,   `hsla(${n.h},70%,40%,${n.a})`);
-        g.addColorStop(0.5, `hsla(${n.h},60%,25%,${n.a * 0.5})`);
+    for (const d of defs) {
+        const g = nc.createRadialGradient(d.x, d.y, 0, d.x, d.y, d.r);
+        g.addColorStop(0,   `hsla(${d.h},65%,45%,${d.a})`);
+        g.addColorStop(0.5, `hsla(${d.h},55%,25%,${d.a * 0.5})`);
         g.addColorStop(1,   "transparent");
         nc.fillStyle = g;
         nc.fillRect(0, 0, 1200, 800);
     }
-    nebulasReady = true;
+    nebBuilt = true;
 }
 
-function drawBackground(tick) {
-    ctx.fillStyle = "#03040f";
+function drawBackground() {
+    ctx.fillStyle = "#02030e";
     ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-
-    // Nebulas
-    if (!nebulasReady) buildNebulas();
+    if (!nebBuilt) buildNebulas();
     ctx.drawImage(nebOffscreen, 0, 0);
 
-    // Subtle grid
-    ctx.strokeStyle = "rgba(10,18,55,0.55)";
-    ctx.lineWidth   = 1;
-    for (let x = 0; x < WORLD_W; x += 48) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, WORLD_H); ctx.stroke();
-    }
-    for (let y = 0; y < WORLD_H; y += 48) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WORLD_W, y); ctx.stroke();
-    }
+    ctx.strokeStyle = "rgba(8,15,48,0.6)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x < WORLD_W; x += 48) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,WORLD_H); ctx.stroke(); }
+    for (let y = 0; y < WORLD_H; y += 48) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(WORLD_W,y); ctx.stroke(); }
 
-    // Stars with parallax scroll + twinkle
     for (const s of stars) {
         s.y = (s.y + s.speed) % WORLD_H;
-        s.twinkle += s.twinkleSpeed;
-        const alpha = s.alpha * (0.7 + 0.3 * Math.sin(s.twinkle));
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle   = "#ffffff";
+        s.tw += s.tws;
+        ctx.globalAlpha = s.alpha * (0.65 + 0.35 * Math.sin(s.tw));
+        ctx.fillStyle = "#ffffff";
         ctx.fillRect(Math.round(s.x), Math.round(s.y), s.size, s.size);
     }
     ctx.globalAlpha = 1;
@@ -236,170 +246,174 @@ function drawBackground(tick) {
 // ════════════════════════════════════════════════════════
 let particles = [];
 
-function spawnExplosion(x, y, colors, count, speed = 4) {
-    for (let i = 0; i < count; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const spd   = Math.random() * speed + 0.8;
-        const col   = colors[Math.floor(Math.random() * colors.length)];
-        particles.push({
-            x, y,
-            vx: Math.cos(angle) * spd,
-            vy: Math.sin(angle) * spd,
-            size: Math.floor(Math.random() * 5 + 2),
-            color: col,
-            life: PARTICLE_LIFE + Math.floor(Math.random() * 10),
-            maxLife: PARTICLE_LIFE + 10,
-        });
+function explode(x, y, colors, n, spd = 4.5) {
+    for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = Math.random() * spd + 0.8;
+        particles.push({ x, y,
+            vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+            sz: Math.floor(Math.random() * 5 + 2),
+            color: colors[Math.floor(Math.random() * colors.length)],
+            life: 30 + Math.random() * 15, maxLife: 45 });
     }
 }
 
-function updateParticles() {
+function tickParticles() {
     particles = particles.filter(p => p.life > 0);
-    for (const p of particles) {
-        p.x  += p.vx; p.y  += p.vy;
-        p.vx *= 0.91; p.vy *= 0.91;
-        p.life--;
-    }
+    for (const p of particles) { p.x+=p.vx; p.y+=p.vy; p.vx*=0.91; p.vy*=0.91; p.life--; }
 }
 
 function drawParticles() {
     for (const p of particles) {
-        const a = p.life / p.maxLife;
-        ctx.globalAlpha = a;
-        ctx.fillStyle   = p.color;
-        const s = Math.max(1, Math.ceil(p.size * a));
+        ctx.globalAlpha = p.life / p.maxLife;
+        ctx.fillStyle = p.color;
+        const s = Math.max(1, Math.ceil(p.sz * (p.life / p.maxLife)));
         ctx.fillRect(Math.round(p.x), Math.round(p.y), s, s);
     }
     ctx.globalAlpha = 1;
 }
 
 // ════════════════════════════════════════════════════════
-//  DRAW ENEMIES
+//  DRAW – BULLETS
+// ════════════════════════════════════════════════════════
+function drawBullets(bullets) {
+    for (const b of Object.values(bullets)) {
+        const a = Math.atan2(b.vy, b.vx);
+        ctx.save();
+        ctx.translate(Math.round(b.x), Math.round(b.y));
+        ctx.rotate(a + Math.PI / 2);
+
+        if (b.kind === "laser") {
+            ctx.shadowBlur = 12; ctx.shadowColor = "#00e5ff";
+            ctx.fillStyle = "#ffffff"; ctx.fillRect(-2, -9, 4, 18);
+            ctx.globalAlpha = 0.45; ctx.fillStyle = "#00e5ff"; ctx.fillRect(-4, -11, 8, 22);
+            ctx.globalAlpha = 1;
+        } else if (b.kind === "spread") {
+            ctx.shadowBlur = 10; ctx.shadowColor = "#a8ff78";
+            ctx.fillStyle = "#ccffaa"; ctx.fillRect(-2, -6, 4, 12);
+            ctx.globalAlpha = 0.4; ctx.fillStyle = "#a8ff78"; ctx.fillRect(-4, -8, 8, 16);
+            ctx.globalAlpha = 1;
+        } else { // missile
+            ctx.shadowBlur = 14; ctx.shadowColor = "#ff9030";
+            ctx.fillStyle = "#ffdd88"; ctx.fillRect(-3, -10, 6, 20);
+            ctx.fillStyle = "#ff6600"; ctx.fillRect(-3,  8,   6,  6);
+            ctx.globalAlpha = 0.35; ctx.fillStyle = "#ff9030"; ctx.fillRect(-7, -12, 14, 28);
+            ctx.globalAlpha = 1;
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+}
+
+function drawEnemyBullets(bullets) {
+    for (const b of Object.values(bullets)) {
+        ctx.shadowBlur  = 10;
+        ctx.shadowColor = "#ff3060";
+        ctx.fillStyle   = "#ff3060";
+        ctx.fillRect(Math.round(b.x) - 3, Math.round(b.y) - 3, 6, 6);
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle   = "#ff80a0";
+        ctx.fillRect(Math.round(b.x) - 5, Math.round(b.y) - 5, 10, 10);
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur  = 0;
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  DRAW – ENEMIES (3 unique classes)
 // ════════════════════════════════════════════════════════
 function drawEnemies(enemies) {
     for (const e of Object.values(enemies)) {
-        ctx.shadowBlur  = 16;
-        ctx.shadowColor = "#ff2060";
-        drawPixelShip(SHIP_DREAD, e.x, e.y, e.angle, DREAD_PALETTE, 3);
+        const ps    = e.kind === "capital" ? 3 : e.kind === "cruiser" ? 3 : 3;
+        const glowC = e.kind === "capital" ? "#4466ff" : e.kind === "cruiser" ? "#cc00ff" : "#ff2060";
+        const ship  = e.kind === "capital" ? SHIP_CAPITAL : e.kind === "cruiser" ? SHIP_CRUISER_ENEMY : SHIP_SCOUT;
+        const pal   = e.kind === "capital" ? PAL_CAPITAL  : e.kind === "cruiser" ? PAL_CRUISER_ENEMY  : PAL_SCOUT;
+
+        ctx.shadowBlur  = e.kind === "capital" ? 22 : 14;
+        ctx.shadowColor = glowC;
+        drawPixelShip(ship, e.x, e.y, e.angle, pal, ps);
         ctx.shadowBlur  = 0;
 
         // HP bar
-        const maxHp = 2 + Math.floor((e.wave || 1) / 3);
-        const pct   = e.hp / maxHp;
-        const bw = 28, bh = 3;
-        const bx = Math.round(e.x - bw / 2), by = Math.round(e.y - 30);
-        ctx.fillStyle = "#330011";
-        ctx.fillRect(bx, by, bw, bh);
-        ctx.fillStyle = pct > 0.5 ? "#ff2060" : "#ff8030";
+        const bw = e.kind === "capital" ? 44 : e.kind === "cruiser" ? 32 : 22;
+        const bh = 3, bx = Math.round(e.x - bw/2), by = Math.round(e.y - (e.kind === "capital" ? 40 : 30));
+        const pct = e.hp / e.maxHp;
+        ctx.fillStyle = "#220000"; ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
         ctx.fillRect(bx, by, Math.round(bw * pct), bh);
     }
 }
 
 // ════════════════════════════════════════════════════════
-//  DRAW PLAYERS
+//  DRAW – PLAYERS
 // ════════════════════════════════════════════════════════
-function drawPlayers(players, myId, mouseX, mouseY) {
+function drawPlayers(players, myId, mx, my, myShield) {
     for (const [id, p] of Object.entries(players)) {
         if (!p.alive) continue;
         const isMe = id === myId;
-        const [h, s, l] = parseHSL(p.color);
-        const palette = makeCruiserPalette(`${h},${s}%,${l}%`);
+        const hsl  = parseHSL(p.color);
+        const pal  = makePlayerPalette(hsl);
 
-        ctx.shadowBlur  = isMe ? 20 : 12;
+        ctx.shadowBlur  = isMe ? 22 : 14;
         ctx.shadowColor = p.color;
-        drawPixelShip(SHIP_CRUISER, p.x, p.y, p.angle, palette, isMe ? 3 : 2);
+        drawPixelShip(SHIP_PLAYER, p.x, p.y, p.angle, pal, isMe ? 3 : 2);
         ctx.shadowBlur  = 0;
 
         // Engine trail
         if (isMe) drawEngineTrail(p);
 
-        // Aim line + crosshair
-        if (isMe) {
-            ctx.strokeStyle = "rgba(0,229,255,0.25)";
-            ctx.lineWidth   = 1;
-            ctx.setLineDash([5, 7]);
-            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(mouseX, mouseY); ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Crosshair
-            ctx.strokeStyle = "rgba(0,229,255,0.85)";
-            ctx.lineWidth   = 1;
-            const cs = 9;
+        // Shield ring
+        if (isMe && myShield > 0) {
+            ctx.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
+            ctx.lineWidth   = 2;
             ctx.beginPath();
-            ctx.moveTo(mouseX - cs, mouseY); ctx.lineTo(mouseX + cs, mouseY);
-            ctx.moveTo(mouseX, mouseY - cs); ctx.lineTo(mouseX, mouseY + cs);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(mouseX, mouseY, 5, 0, Math.PI * 2);
+            ctx.arc(Math.round(p.x), Math.round(p.y), 28, 0, Math.PI * 2);
             ctx.stroke();
         }
 
-        // Score tag above ship
+        // Aim line + crosshair
+        if (isMe) {
+            ctx.strokeStyle = "rgba(0,229,255,0.22)";
+            ctx.lineWidth   = 1;
+            ctx.setLineDash([5, 7]);
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(mx, my); ctx.stroke();
+            ctx.setLineDash([]);
+
+            const cs = 9;
+            ctx.strokeStyle = "rgba(0,229,255,0.8)";
+            ctx.lineWidth   = 1;
+            ctx.beginPath();
+            ctx.moveTo(mx-cs, my); ctx.lineTo(mx+cs, my);
+            ctx.moveTo(mx, my-cs); ctx.lineTo(mx, my+cs);
+            ctx.stroke();
+            ctx.beginPath(); ctx.arc(mx, my, 4, 0, Math.PI*2); ctx.stroke();
+        }
+
+        // Score tag
         ctx.font      = "6px 'Press Start 2P', monospace";
         ctx.textAlign = "center";
-        ctx.fillStyle = isMe ? "rgba(0,229,255,0.8)" : "rgba(200,220,255,0.55)";
-        ctx.fillText(`${p.score ?? 0}`, Math.round(p.x), Math.round(p.y - 36));
+        ctx.fillStyle = isMe ? "rgba(0,229,255,0.85)" : "rgba(200,220,255,0.5)";
+        ctx.fillText(`${p.score ?? 0}`, Math.round(p.x), Math.round(p.y - (isMe ? 42 : 30)));
     }
 }
 
-// Engine trail – simple pixel exhaust
 function drawEngineTrail(p) {
-    const mx = -Math.sin(p.angle);
-    const my =  Math.cos(p.angle);
-    for (let i = 0; i < 6; i++) {
-        const t = i / 6;
-        const x = p.x + mx * (14 + i * 5) + (Math.random() - 0.5) * 4;
-        const y = p.y + my * (14 + i * 5) + (Math.random() - 0.5) * 4;
-        ctx.globalAlpha = (1 - t) * 0.6;
-        ctx.fillStyle   = i < 2 ? "#ffffff" : (i < 4 ? "#ff9030" : "#ff4400");
+    const mx = -Math.sin(p.angle), my = Math.cos(p.angle);
+    for (let i = 0; i < 8; i++) {
+        const t  = i / 8;
+        const ex = p.x + mx * (16 + i * 5) + (Math.random() - 0.5) * 5;
+        const ey = p.y + my * (16 + i * 5) + (Math.random() - 0.5) * 5;
+        ctx.globalAlpha = (1 - t) * 0.65;
+        ctx.fillStyle   = i < 2 ? "#ffffff" : i < 5 ? "#ff9030" : "#ff4400";
         const sz = Math.max(1, Math.floor((1 - t) * 5));
-        ctx.fillRect(Math.round(x), Math.round(y), sz, sz);
+        ctx.fillRect(Math.round(ex), Math.round(ey), sz, sz);
     }
     ctx.globalAlpha = 1;
 }
 
-// ── Utility: parse hsl(...) string ───────────────────────
 function parseHSL(hsl) {
     const m = hsl.match(/[\d.]+/g);
     return m ? m.map(Number) : [180, 80, 60];
-}
-
-// ════════════════════════════════════════════════════════
-//  DRAW BULLETS
-// ════════════════════════════════════════════════════════
-function drawBullets(bullets, myId) {
-    for (const b of Object.values(bullets)) {
-        const angle = Math.atan2(b.vy, b.vx);
-        // Inline draw, pass angle
-        const isPlayer = !b.ownerId?.startsWith("bot");
-        drawBulletAtAngle(b.x, b.y, angle, isPlayer);
-    }
-}
-
-function drawBulletAtAngle(x, y, angle, isPlayer) {
-    ctx.save();
-    ctx.translate(Math.round(x), Math.round(y));
-    ctx.rotate(angle + Math.PI / 2);
-    if (isPlayer) {
-        ctx.shadowBlur  = 14;
-        ctx.shadowColor = "#00e5ff";
-        ctx.fillStyle   = "#ffffff";
-        ctx.fillRect(-2, -8, 4, 16);
-        ctx.globalAlpha = 0.5;
-        ctx.fillStyle   = "#00e5ff";
-        ctx.fillRect(-4, -10, 8, 20);
-        ctx.globalAlpha = 1;
-    } else {
-        ctx.shadowBlur  = 10;
-        ctx.shadowColor = "#ff2060";
-        ctx.fillStyle   = "#ff2060";
-        ctx.fillRect(-4, -4, 8, 8);
-        ctx.globalAlpha = 0.35;
-        ctx.fillStyle   = "#ff80b0";
-        ctx.fillRect(-7, -7, 14, 14);
-        ctx.globalAlpha = 1;
-    }
-    ctx.restore();
 }
 
 // ════════════════════════════════════════════════════════
@@ -408,7 +422,7 @@ function drawBulletAtAngle(x, y, angle, isPlayer) {
 let waveFlash = 0;
 function drawWaveFlash() {
     if (waveFlash <= 0) return;
-    ctx.globalAlpha = waveFlash / 40;
+    ctx.globalAlpha = (waveFlash / 50) * 0.3;
     ctx.fillStyle   = "#00e5ff";
     ctx.fillRect(0, 0, WORLD_W, WORLD_H);
     ctx.globalAlpha = 1;
@@ -418,13 +432,16 @@ function drawWaveFlash() {
 // ════════════════════════════════════════════════════════
 //  STATE
 // ════════════════════════════════════════════════════════
-let myId     = null;
-let gameOver = false;
-let score    = 0;
-let serverPlayers = {};
-let serverBullets = {};
-let serverEnemies = {};
-let currentWave   = 1;
+let myId           = null;
+let myWeapon       = "laser";
+let myShield       = 3;
+let gameOver       = false;
+let score          = 0;
+let currentWave    = 1;
+let serverPlayers  = {};
+let serverBullets  = {};
+let serverEnemyBullets = {};
+let serverEnemies  = {};
 
 // ════════════════════════════════════════════════════════
 //  INPUT
@@ -433,23 +450,38 @@ const keys = {};
 window.addEventListener("keydown", e => { keys[e.key.toLowerCase()] = true; });
 window.addEventListener("keyup",   e => { keys[e.key.toLowerCase()] = false; });
 
-let mouseX = WORLD_W / 2, mouseY = WORLD_H / 2;
+// Q / Tab cycle weapon
+window.addEventListener("keydown", e => {
+    if (e.key.toLowerCase() === "q" || e.key === "Tab") {
+        e.preventDefault();
+        socket?.readyState === WebSocket.OPEN &&
+            socket.send(JSON.stringify({ type: "switch_weapon" }));
+    }
+    // Space to shoot
+    if (e.key === " ") {
+        e.preventDefault();
+        fireShot();
+    }
+});
+
+let mx = WORLD_W / 2, my = WORLD_H / 2;
 canvas.addEventListener("mousemove", e => {
-    const r  = canvas.getBoundingClientRect();
-    const sx = canvas.width  / r.width;
-    const sy = canvas.height / r.height;
-    mouseX   = (e.clientX - r.left) * sx;
-    mouseY   = (e.clientY - r.top)  * sy;
+    const r = canvas.getBoundingClientRect();
+    mx = (e.clientX - r.left) * (canvas.width  / r.width);
+    my = (e.clientY - r.top)  * (canvas.height / r.height);
 });
 
 let lastShot = 0;
-canvas.addEventListener("click", () => {
+const COOLDOWN_TABLE = { laser: 170, spread: 600, missile: 900 };
+canvas.addEventListener("click", fireShot);
+
+function fireShot() {
     const now = performance.now();
-    if (now - lastShot < SHOOT_COOLDOWN || gameOver) return;
+    const cd  = COOLDOWN_TABLE[myWeapon] ?? 200;
+    if (now - lastShot < cd || gameOver) return;
     lastShot = now;
-    if (socket?.readyState === WebSocket.OPEN)
-        socket.send(JSON.stringify({ type: "shoot" }));
-});
+    socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({ type: "shoot" }));
+}
 
 // ════════════════════════════════════════════════════════
 //  WEBSOCKET
@@ -458,7 +490,13 @@ let socket;
 
 function connect() {
     setStatus("connecting");
-    socket = new WebSocket(`${WORKER_URL}/room/${ROOM_ID}`);
+    try {
+        socket = new WebSocket(`${WORKER_WS}/room/${ROOM_ID}`);
+    } catch (e) {
+        setStatus("disconnected");
+        setTimeout(connect, 3000);
+        return;
+    }
     socket.addEventListener("open",    () => setStatus("connected"));
     socket.addEventListener("message", e  => handleMsg(JSON.parse(e.data)));
     socket.addEventListener("close",   () => { setStatus("disconnected"); setTimeout(connect, 2500); });
@@ -468,45 +506,57 @@ function connect() {
 function handleMsg(msg) {
     switch (msg.type) {
         case "init":
-            myId    = msg.playerId;
-            WORLD_W = msg.worldW;
-            WORLD_H = msg.worldH;
-            serverPlayers = msg.state.players;
-            serverBullets = msg.state.bullets;
-            serverEnemies = msg.state.enemies;
-            currentWave   = msg.state.wave;
-            resizeCanvas();
-            buildNebulas();
-            updateHUD();
+            myId = msg.playerId; WORLD_W = msg.worldW; WORLD_H = msg.worldH;
+            serverPlayers = msg.state.players; serverBullets = msg.state.bullets;
+            serverEnemyBullets = msg.state.enemyBullets ?? {};
+            serverEnemies = msg.state.enemies; currentWave = msg.state.wave;
+            resizeCanvas(); buildNebulas(); updateHUD();
             break;
         case "tick":
-            serverPlayers = msg.players;
-            serverBullets = msg.bullets;
-            serverEnemies = msg.enemies;
-            currentWave   = msg.wave;
-            score = serverPlayers[myId]?.score ?? score;
+            serverPlayers = msg.players; serverBullets = msg.bullets;
+            serverEnemyBullets = msg.enemyBullets ?? {};
+            serverEnemies = msg.enemies; currentWave = msg.wave;
+            const me = serverPlayers[myId];
+            if (me) { score = me.score; myShield = me.shield ?? myShield; }
             updateHUD();
             break;
+        case "weapon_changed":
+            myWeapon = msg.weapon;
+            drawWeaponHUD(myWeapon);
+            break;
         case "explosion":
-            spawnExplosion(msg.x, msg.y, ["#ff6030","#ff9030","#ffcc00","#ffffff"], 22, 5);
-            spawnExplosion(msg.x, msg.y, ["#ff2060","#8b0030"], 12, 3);
+            if (msg.kind === "capital") {
+                explode(msg.x, msg.y, ["#ffcc00","#ff6600","#ffffff","#4466ff"], 36, 6);
+                explode(msg.x, msg.y, ["#ff4400","#ff9900"], 20, 3);
+            } else if (msg.kind === "cruiser") {
+                explode(msg.x, msg.y, ["#cc00ff","#ff80ff","#ffffff","#ff9030"], 24, 5);
+            } else {
+                explode(msg.x, msg.y, ["#ff2060","#ff9030","#ffffff"], 16, 4.5);
+            }
+            break;
+        case "hit":
+            explode(msg.x, msg.y, ["#ffffff","#ffdd88"], 6, 2);
+            break;
+        case "shield_hit":
+            if (msg.playerId === myId) {
+                myShield = Math.max(0, myShield - 1);
+                drawShieldHUD(myShield);
+                explode(serverPlayers[myId]?.x ?? 0, serverPlayers[myId]?.y ?? 0, ["#4488ff","#aaccff"], 8, 2);
+            }
             break;
         case "player_dead":
-            spawnExplosion(msg.x, msg.y, ["#00e5ff","#0080ff","#ffffff"], 28, 6);
+            explode(msg.x, msg.y, ["#00e5ff","#ffffff","#0088ff"], 30, 6);
             if (msg.playerId === myId) { gameOver = true; showGameOver(); }
             break;
         case "new_wave":
-            currentWave = msg.wave;
-            waveFlash   = 40;
-            updateHUD();
+            currentWave = msg.wave; waveFlash = 50;
+            myShield = 3; updateHUD();
             break;
     }
 }
 
-// ── Input → Server ────────────────────────────────────────
+// Input → Server
 let lastInput = 0;
-const INPUT_RATE = 33;
-
 function sendInput() {
     if (!socket || socket.readyState !== WebSocket.OPEN || gameOver) return;
     let vx = 0, vy = 0;
@@ -515,8 +565,8 @@ function sendInput() {
     if (keys["a"] || keys["arrowleft"])  vx -= 1;
     if (keys["d"] || keys["arrowright"]) vx += 1;
     if (vx && vy) { vx *= 0.707; vy *= 0.707; }
-    const me    = serverPlayers[myId];
-    const angle = me ? Math.atan2(mouseY - me.y, mouseX - me.x) : 0;
+    const p = serverPlayers[myId];
+    const angle = p ? Math.atan2(my - p.y, mx - p.x) : 0;
     socket.send(JSON.stringify({ type: "move", vx, vy, angle }));
 }
 
@@ -524,58 +574,49 @@ function sendInput() {
 //  HUD
 // ════════════════════════════════════════════════════════
 function updateHUD() {
-    const el = document.getElementById("score");
-    if (el) el.textContent = String(score).padStart(6, "0");
-    const wn = document.getElementById("wave-num");
-    if (wn) wn.textContent = String(currentWave);
-    const pc = document.getElementById("player-count");
-    if (pc) pc.textContent = String(Object.keys(serverPlayers).length);
+    const sel = id => document.getElementById(id);
+    const sc  = sel("score");  if (sc) sc.textContent = String(score).padStart(6, "0");
+    const wn  = sel("wave-num"); if (wn) wn.textContent = String(currentWave);
+    const pc  = sel("player-count"); if (pc) pc.textContent = String(Object.keys(serverPlayers).length);
+    drawWeaponHUD(myWeapon);
+    drawShieldHUD(myShield);
 }
 
 function setStatus(s) {
     const el = document.getElementById("connection-status");
     if (!el) return;
-    const map = {
-        connecting:   ["status-connecting", "◆ CONECTANDO..."],
-        connected:    ["status-connected",  "◆ CONECTADO"],
-        disconnected: ["status-disconnected","◆ DESCONECTADO"],
-    };
-    el.className   = map[s][0];
-    el.textContent = map[s][1];
+    const map = { connecting: ["status-connecting","◆ CONECTANDO..."], connected: ["status-connected","◆ CONECTADO"], disconnected: ["status-disconnected","◆ DESCONECTADO"] };
+    [el.className, el.textContent] = map[s];
 }
 
 function showGameOver() {
     const ov = document.getElementById("screen-overlay");
-    if (!ov) return;
-    ov.classList.remove("hidden");
+    if (ov) ov.classList.remove("hidden");
     const se = document.getElementById("overlay-score");
     if (se) se.textContent = `PUNTOS: ${String(score).padStart(6,"0")}`;
 }
 
 document.getElementById("restart-btn")?.addEventListener("click", () => {
     document.getElementById("screen-overlay")?.classList.add("hidden");
-    gameOver = false;
-    socket?.close();
+    gameOver = false; socket?.close();
 });
 
 // ════════════════════════════════════════════════════════
 //  MAIN LOOP
 // ════════════════════════════════════════════════════════
-let tick = 0;
+const INPUT_RATE = 33;
+let lastInputTime = 0;
 
 function gameLoop(now) {
     requestAnimationFrame(gameLoop);
-    tick++;
-
-    if (now - lastInput >= INPUT_RATE) { sendInput(); lastInput = now; }
-
-    updateParticles();
-
-    drawBackground(tick);
+    if (now - lastInputTime >= INPUT_RATE) { sendInput(); lastInputTime = now; }
+    tickParticles();
+    drawBackground();
     drawWaveFlash();
-    drawBullets(serverBullets, myId);
+    drawEnemyBullets(serverEnemyBullets);
+    drawBullets(serverBullets);
     drawEnemies(serverEnemies);
-    drawPlayers(serverPlayers, myId, mouseX, mouseY);
+    drawPlayers(serverPlayers, myId, mx, my, myShield);
     drawParticles();
 }
 
