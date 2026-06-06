@@ -5,7 +5,7 @@ import {
   SHIP_HEAT_LIMIT, SHIP_BOOST_COST, WEAPON_STATS, AI_STATS,
   HITBOX_PLAYER_BULLET_DEFAULT_SQ, HITBOX_ENEMY_BULLET_SQ,
   EMP_DURATION_TICKS, collisionRadiusFor,
-  clamp, uuid, distSq, shortestAngleDelta,
+  clamp, uuid, distSq, shortestAngleDelta, isAngleInArc,
 } from "./gameState";
 import {
   createPlayer, respawnPlayer, updateShipPhysics, applyShipDamage,
@@ -62,6 +62,22 @@ class GameRoom extends DurableObject<Env> {
     this.startLoop();
   }
 
+  // ── Network Helpers ────────────────────────────────────────────────────────
+  private safeSend(ws: WebSocket, payload: any): void {
+    try {
+      if (ws.readyState === WebSocket.READY_STATE_OPEN) {
+        ws.send(JSON.stringify(payload));
+      }
+    } catch {
+      // Ignorar errores de socket cerrado silenciosamente
+    }
+  }
+
+  private safeBroadcast(payload: any): void {
+    broadcast(this.ctx.getWebSockets(), payload);
+  }
+
+  // ── Lifecycle & Connections ───────────────────────────────────────────────
   async fetch(request: Request): Promise<Response> {
     const origin = request.headers.get("Origin") ?? "*";
     const corsHeaders = {
@@ -79,6 +95,7 @@ class GameRoom extends DurableObject<Env> {
 
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
+
     const playerId = uuid();
     server.serializeAttachment({ playerId });
 
@@ -90,9 +107,9 @@ class GameRoom extends DurableObject<Env> {
     const player = createPlayer(playerId, team);
     this.state.ships[playerId] = player;
 
-    try { server.send(JSON.stringify(buildInitPayload(playerId, this.state))); } catch { }
+    this.safeSend(server, buildInitPayload(playerId, this.state));
 
-    broadcast(this.ctx.getWebSockets(), {
+    this.safeBroadcast({
       type: "player_join",
       player: { id: player.id, name: player.name, color: player.color, team: player.team },
     });
@@ -103,9 +120,11 @@ class GameRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string) {
-    const { playerId } = ws.deserializeAttachment() as { playerId: string };
-    const ship = this.state.ships[playerId];
+  webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string): void {
+    const attachment = ws.deserializeAttachment() as { playerId: string } | null;
+    if (!attachment) return;
+
+    const ship = this.state.ships[attachment.playerId];
     if (!ship || ship.controller !== "player") return;
     const player = ship as PlayerShip;
 
@@ -113,33 +132,7 @@ class GameRoom extends DurableObject<Env> {
     if (!msg) return;
 
     if (msg.type.startsWith("admin_")) {
-      const effect = handleAdmin(msg, player, this.state, this.env);
-      switch (effect.kind) {
-        case "authed":
-          try { ws.send(JSON.stringify({ type: "admin_authed", ok: effect.ok })); } catch { }
-          break;
-        case "reset_all":
-          broadcast(this.ctx.getWebSockets(), { type: "admin_event", action: "reset_all" });
-          this.persistence.markDirty();
-          break;
-        case "kick": {
-          const targetWs = this.ctx.getWebSockets().find(sock => {
-            try { return (sock.deserializeAttachment() as any)?.playerId === effect.playerId; } catch { return false; }
-          });
-          if (targetWs) { try { targetWs.close(1000, "Kicked by admin"); } catch { } }
-          broadcast(this.ctx.getWebSockets(), { type: "player_leave", playerId: effect.playerId });
-          this.persistence.markDirty();
-          break;
-        }
-        case "set_wave":
-          broadcast(this.ctx.getWebSockets(), { type: "new_wave", wave: effect.wave });
-          this.persistence.markDirty();
-          break;
-        case "clear_enemies":
-          broadcast(this.ctx.getWebSockets(), { type: "admin_event", action: "clear_enemies" });
-          this.persistence.markDirty();
-          break;
-      }
+      this.processAdminMessage(ws, player, msg);
       return;
     }
 
@@ -148,72 +141,61 @@ class GameRoom extends DurableObject<Env> {
         const t = msg.team as Team;
         if (t === "red" || t === "blue" || t === "spectator") {
           player.team = t;
-          broadcast(this.ctx.getWebSockets(), { type: "player_team", playerId, team: t });
+          this.safeBroadcast({ type: "player_team", playerId: player.id, team: t });
         }
         break;
       }
-
-      case "respawn":
+      case "respawn": {
         if (!player.alive) {
           respawnPlayer(player);
           this.persistence.markDirty();
         }
         break;
-
-      case "boost":
+      }
+      case "boost": {
         if (!player.alive || !checkBoostRate(ws)) return;
-        if (player.boostCooldown <= 0 && player.boostEnergy >= SHIP_BOOST_COST) player.boostQueued = true;
-        break;
-
-      case "move": {
-        if (!player.alive || !checkMoveRate(ws)) return;
-        const hasLocal = typeof msg.forward === "number" || typeof msg.strafe === "number";
-        const hasWorld = typeof msg.vx === "number" || typeof msg.vy === "number";
-        if (hasLocal) {
-          player.inputForward = clamp(Number(msg.forward ?? 0), -1, 1);
-          player.inputStrafe = clamp(Number(msg.strafe ?? 0), -1, 1);
-        } else if (hasWorld) {
-          const rawX = clamp(Number(msg.vx ?? 0), -1, 1);
-          const rawY = clamp(Number(msg.vy ?? 0), -1, 1);
-          const cos = Math.cos(player.angle);
-          const sin = Math.sin(player.angle);
-          player.inputForward = clamp(rawX * cos + rawY * sin, -1, 1);
-          player.inputStrafe = clamp(-rawX * sin + rawY * cos, -1, 1);
-        } else {
-          player.inputForward = 0; player.inputStrafe = 0;
+        if (player.boostCooldown <= 0 && player.boostEnergy >= SHIP_BOOST_COST) {
+          player.boostQueued = true;
         }
-        if (typeof msg.angle === "number") player.targetAngle = msg.angle;
         break;
       }
-
+      case "move": {
+        if (!player.alive || !checkMoveRate(ws)) return;
+        this.processPlayerMovement(player, msg);
+        break;
+      }
       case "switch_weapon": {
         if (!player.alive) return;
         const weapon = cycleWeapon(player);
-        try { ws.send(JSON.stringify({ type: "weapon_changed", weapon })); } catch { }
+        this.safeSend(ws, { type: "weapon_changed", weapon });
         break;
       }
-
-      case "shoot":
+      case "shoot": {
         if (!player.alive || !checkShootRate(ws)) return;
         this.tryFireWeapon(player);
         break;
+      }
     }
   }
 
-  webSocketClose(ws: WebSocket) {
-    const { playerId } = ws.deserializeAttachment() as { playerId?: string };
+  webSocketClose(ws: WebSocket): void {
+    const attachment = ws.deserializeAttachment() as { playerId?: string } | null;
+    const playerId = attachment?.playerId;
+
     if (playerId && this.state.ships[playerId]) {
       delete this.state.ships[playerId];
-      broadcast(this.ctx.getWebSockets(), { type: "player_leave", playerId });
+      this.safeBroadcast({ type: "player_leave", playerId });
       this.pendingShots = this.pendingShots.filter(s => s.ownerId !== playerId);
       this.persistence.markDirty();
     }
+
     if (this.getPlayerShips().length === 0) {
       this.stopLoop();
       this.persistence.markDirty();
     }
   }
 
+  // ── Game Loop & Core Systems ──────────────────────────────────────────────
   private startLoop(): void {
     if (this.loopTimer) return;
     this.loopTimer = setInterval(() => this.gameTick(), TICK_MS);
@@ -234,16 +216,26 @@ class GameRoom extends DurableObject<Env> {
     const alivePlayers = playerShips.filter(p => p.alive);
     const aliveEnemies = enemyShips.filter(e => e.alive);
 
+    // Zone Control Logic
     const zoneEvents = updateControlPoints(st.zones, alivePlayers, aliveEnemies, st.wave);
-    for (const ev of zoneEvents) broadcast(this.ctx.getWebSockets(), { type: "objective", ...ev });
+    for (const ev of zoneEvents) {
+      this.safeBroadcast({ type: "objective", ...ev });
+    }
 
+    // Players Physics & Zone Bonuses
     for (const player of alivePlayers) {
       const zoneBonus = getZoneBonusForShip(player, st.zones);
       updateShipPhysics(player, zoneBonus);
-      if (zoneBonus.repairEveryTicks > 0 && st.tick % zoneBonus.repairEveryTicks === 0 && player.hp < player.maxHp) player.hp++;
-      if (zoneBonus.scoreEveryTicks > 0 && st.tick % zoneBonus.scoreEveryTicks === 0) player.score += 1;
+
+      if (zoneBonus.repairEveryTicks > 0 && st.tick % zoneBonus.repairEveryTicks === 0 && player.hp < player.maxHp) {
+        player.hp++;
+      }
+      if (zoneBonus.scoreEveryTicks > 0 && st.tick % zoneBonus.scoreEveryTicks === 0) {
+        player.score += 1;
+      }
     }
 
+    // AI Logic & Physics
     const enemyCounts = computeEnemyCounts(aliveEnemies);
     for (const enemy of aliveEnemies) {
       const nearestZone = findNearestZone(enemy.x, enemy.y, st.zones);
@@ -255,37 +247,53 @@ class GameRoom extends DurableObject<Env> {
         let closestDSq = Infinity;
         for (const p of alivePlayers) {
           const dSq = distSq(enemy, p);
-          if (dSq < closestDSq) { closestDSq = dSq; closestPlayer = p; }
+          if (dSq < closestDSq) {
+            closestDSq = dSq;
+            closestPlayer = p;
+          }
         }
-        if (closestPlayer && shouldEnemyFire(enemy, closestDSq)) this.fireEnemyWeapon(enemy, closestPlayer);
+        if (closestPlayer) {
+          const angToTarget = Math.atan2(closestPlayer.y - enemy.y, closestPlayer.x - enemy.x);
+          const aimError = shortestAngleDelta(enemy.angle, angToTarget);
+          if (shouldEnemyFire(enemy, closestDSq, aimError)) {
+            this.fireEnemyWeapon(enemy, closestPlayer);
+          }
+        }
       }
     }
 
+    // Combat Resolution
     this.resolvePendingShots();
     this.updateBullets(alivePlayers, aliveEnemies);
     this.resolveCollisions(alivePlayers, aliveEnemies);
     this.resolveWaveCompletion(alivePlayers);
 
     if (st.tick % SAVE_EVERY_TICKS === 0) this.persistence.markDirty();
-    broadcast(this.ctx.getWebSockets(), buildTickPayload(st));
+    this.safeBroadcast(buildTickPayload(st));
   }
 
+  // ── Combat & Weapons ──────────────────────────────────────────────────────
   private tryFireWeapon(player: PlayerShip): void {
     if (player.shootCooldown > 0 || player.weaponHeat >= SHIP_HEAT_LIMIT || player.empTicks > 0) return;
+
     const weapon = player.weapon;
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
-    const angle = player.angle;
+    // Arc Check
     const targetId = this.findTargetId(player, weapon);
+    if (targetId && !isAngleInArc(player.angle, Math.atan2(this.state.ships[targetId].y - player.y, this.state.ships[targetId].x - player.x), stats.arc)) {
+      // Continue to fire but it won't be guided if guided. Or just return if strict.
+    }
+
     player.shootCooldown = stats.cooldown;
     player.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, player.weaponHeat + stats.heat);
-    applyWeaponRecoil(player, angle, stats.recoil);
+    applyWeaponRecoil(player, player.angle, stats.recoil);
 
     if (stats.chargeTicks > 0) {
-      this.queueShot(player.id, weapon, angle, stats.chargeTicks, targetId);
+      this.queueShot(player.id, weapon, player.angle, stats.chargeTicks, targetId);
     } else {
-      this.spawnWeaponBullets(player.id, "player", player.x, player.y, angle, weapon, targetId);
+      this.spawnWeaponBullets(player.id, "player", player.x, player.y, player.angle, weapon, targetId);
     }
     this.persistence.markDirty();
   }
@@ -294,6 +302,7 @@ class GameRoom extends DurableObject<Env> {
     const weapon = AI_STATS[enemy.kind].preferredWeapon;
     const stats = WEAPON_STATS[weapon];
     const angle = Math.atan2(target.y + target.vy * 20 - enemy.y, target.x + target.vx * 20 - enemy.x);
+
     if (stats.chargeTicks > 0) {
       enemy.weapon = weapon;
       enemy.shootCooldown = Math.round(stats.cooldown * AI_STATS[enemy.kind].shootRateMul);
@@ -308,8 +317,9 @@ class GameRoom extends DurableObject<Env> {
   private queueShot(ownerId: string, weapon: WeaponKind, angle: number, delay: number, targetId?: string): void {
     const owner = this.state.ships[ownerId];
     if (!owner) return;
+
     this.pendingShots.push({ ownerId, weapon, angle, targetId, fireTick: this.state.tick + delay });
-    broadcast(this.ctx.getWebSockets(), {
+    this.safeBroadcast({
       type: "weapon_charge",
       ownerId,
       weapon,
@@ -324,6 +334,7 @@ class GameRoom extends DurableObject<Env> {
   private resolvePendingShots(): void {
     const ready = this.pendingShots.filter(s => s.fireTick <= this.state.tick);
     this.pendingShots = this.pendingShots.filter(s => s.fireTick > this.state.tick);
+
     for (const shot of ready) {
       const owner = this.state.ships[shot.ownerId];
       if (!owner || !owner.alive) continue;
@@ -334,26 +345,26 @@ class GameRoom extends DurableObject<Env> {
   private spawnWeaponBullets(
     ownerId: string,
     ownerController: "player" | "ai",
-    x: number,
-    y: number,
-    angle: number,
-    weapon: WeaponKind,
-    targetId?: string,
+    x: number, y: number, angle: number,
+    weapon: WeaponKind, targetId?: string
   ): void {
     const originX = x + Math.cos(angle) * 28;
     const originY = y + Math.sin(angle) * 28;
     const offsets = weapon === "plasma_broadside" ? [-Math.PI / 2, Math.PI / 2] : weapon === "autocannon" ? [-0.04, 0.04] : [0];
+
     for (const off of offsets) {
-      const a = angle + off;
-      const bullet = makeBullet(ownerId, ownerController, originX, originY, a, weapon, targetId);
+      const bullet = makeBullet(ownerId, ownerController, originX, originY, angle + off, weapon, targetId);
       this.state.bullets[bullet.id] = bullet;
     }
-    broadcast(this.ctx.getWebSockets(), { type: "shockwave", x: originX, y: originY, weapon });
+    this.safeBroadcast({ type: "shockwave", x: originX, y: originY, weapon });
   }
 
+  // ── Bullet Physics & Collisions ───────────────────────────────────────────
   private updateBullets(alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
     const st = this.state;
+
     for (const [bid, bullet] of Object.entries(st.bullets)) {
+      // 1. Guided tracking logic
       if ((bullet.kind === "guided_missile" || bullet.kind === "torpedo") && bullet.targetId && bullet.turnRate) {
         const tgt = st.ships[bullet.targetId];
         if (tgt && tgt.alive) {
@@ -364,83 +375,130 @@ class GameRoom extends DurableObject<Env> {
         }
       }
 
+      // 2. Movement
       bullet.x += bullet.vx;
       bullet.y += bullet.vy;
       bullet.life--;
 
-      const shouldDetonate = bullet.detonateAtLife !== undefined && bullet.life <= bullet.detonateAtLife;
-      if (shouldDetonate) {
+      // 3. Detonation / Culling
+      if (bullet.detonateAtLife !== undefined && bullet.life <= bullet.detonateAtLife) {
         this.detonateBullet(bid, bullet, alivePlayers, aliveEnemies);
         continue;
       }
 
-      if (bullet.life <= 0 || bullet.x < -120 || bullet.x > WORLD_W + 120 || bullet.y < -120 || bullet.y > WORLD_H + 120) {
+      if (bullet.life <= 0) {
         delete st.bullets[bid];
         continue;
       }
 
-      if (bullet.ownerController === "player") this.resolveBulletAgainstEnemies(bid, bullet, aliveEnemies);
-      else this.resolveBulletAgainstPlayers(bid, bullet, alivePlayers);
+      // 4. Hit Detection (Hybrid PvPvE logic)
+      if (bullet.ownerController === "player") {
+        this.resolvePlayerBulletHits(bid, bullet, aliveEnemies, alivePlayers);
+      } else {
+        this.resolveEnemyBulletHits(bid, bullet, alivePlayers);
+      }
     }
   }
 
-  private resolveBulletAgainstEnemies(bid: string, bullet: Bullet, aliveEnemies: EnemyShip[]): void {
+  private resolvePlayerBulletHits(bid: string, bullet: Bullet, aliveEnemies: EnemyShip[], alivePlayers: PlayerShip[]): void {
+    const owner = this.state.ships[bullet.ownerId] as PlayerShip | undefined;
+
+    // Check AI Enemies
     for (const enemy of aliveEnemies) {
-      if (!enemy.alive) continue;
       const hitRadius = collisionRadiusFor(enemy) + bullet.radius;
       if (distSq(bullet, enemy) >= Math.max(HITBOX_PLAYER_BULLET_DEFAULT_SQ, hitRadius * hitRadius)) continue;
 
-      const owner = this.state.ships[bullet.ownerId] as PlayerShip | undefined;
-      const result = applyShipDamage(enemy, bullet.damage, false, bullet.kind === "railgun");
-      if (bullet.statusEffect === "emp") enemy.empTicks = Math.max(enemy.empTicks, EMP_DURATION_TICKS);
-      this.handleSplash(bullet, aliveEnemies, enemy.id, owner);
-      delete this.state.bullets[bid];
+      this.applyHitToShip(enemy, bullet, owner, bid, aliveEnemies);
+      return; // Bullet consumed
+    }
 
-      if (result.dead) {
-        delete this.state.ships[enemy.id];
-        if (owner) owner.score += this.getEnemyScore(enemy);
-        broadcast(this.ctx.getWebSockets(), { type: "explosion", x: enemy.x, y: enemy.y, kind: enemy.kind, shipClass: enemy.shipClass });
-        this.persistence.markDirty();
-      } else {
-        broadcast(this.ctx.getWebSockets(), { type: "hit", x: enemy.x, y: enemy.y, weapon: bullet.kind });
+    // Check PvP (Enemy Players)
+    if (owner && owner.team !== "spectator") {
+      for (const p of alivePlayers) {
+        if (p.team === owner.team || p.team === "spectator" || p.id === owner.id) continue;
+
+        const hitRadius = collisionRadiusFor(p) + bullet.radius;
+        if (distSq(bullet, p) >= Math.max(HITBOX_PLAYER_BULLET_DEFAULT_SQ, hitRadius * hitRadius)) continue;
+
+        this.applyHitToShip(p, bullet, owner, bid, aliveEnemies);
+        return; // Bullet consumed
       }
-      break;
     }
   }
 
-  private resolveBulletAgainstPlayers(bid: string, bullet: Bullet, alivePlayers: PlayerShip[]): void {
+  private resolveEnemyBulletHits(bid: string, bullet: Bullet, alivePlayers: PlayerShip[]): void {
     for (const player of alivePlayers) {
-      if (!player.alive) continue;
+      if (player.team === "spectator") continue;
+
       const hitRadius = collisionRadiusFor(player) + bullet.radius;
       if (distSq(bullet, player) >= Math.max(HITBOX_ENEMY_BULLET_SQ, hitRadius * hitRadius)) continue;
 
-      delete this.state.bullets[bid];
-      if (bullet.statusEffect === "emp") {
-        player.empTicks = Math.max(player.empTicks, EMP_DURATION_TICKS);
-        broadcast(this.ctx.getWebSockets(), { type: "emp_hit", playerId: player.id, x: player.x, y: player.y });
+      this.applyHitToShip(player, bullet, undefined, bid, []);
+      return; // Bullet consumed
+    }
+  }
+
+  private applyHitToShip(target: Ship, bullet: Bullet, owner: PlayerShip | undefined, bid: string, aliveEnemies: EnemyShip[]): void {
+    delete this.state.bullets[bid];
+
+    if (bullet.statusEffect === "emp") {
+      target.empTicks = Math.max(target.empTicks || 0, EMP_DURATION_TICKS);
+      if (target.controller === "player") {
+        this.safeBroadcast({ type: "emp_hit", playerId: target.id, x: target.x, y: target.y });
       }
-      const result = applyShipDamage(player, bullet.damage, false, bullet.kind === "railgun");
-      if (result.shieldHit) broadcast(this.ctx.getWebSockets(), { type: "shield_hit", playerId: player.id, reason: "weapon" });
-      else if (result.armorHit) broadcast(this.ctx.getWebSockets(), { type: "hit", x: player.x, y: player.y, weapon: bullet.kind });
-      if (result.dead) {
-        broadcast(this.ctx.getWebSockets(), { type: "player_dead", playerId: player.id, x: player.x, y: player.y });
-        this.persistence.markDirty();
+    }
+
+    const result = applyShipDamage(target, bullet.damage, false, bullet.kind === "railgun");
+
+    // Handle specific Splash for AI dependencies without breaking them
+    if (target.controller === "ai") {
+      this.handleSplash(bullet, aliveEnemies, target.id, owner);
+    } else if (bullet.splashRadius > 0 && target.controller === "player") {
+      // PvP Splash requires manual handling since enemySystem strictly expects EnemyShip arrays
+      this.handlePvPSplash(bullet, target.id, owner);
+      this.handleSplash(bullet, aliveEnemies, undefined, owner); // Still hit AI around PvP target
+    }
+
+    // Feedback & Death handling
+    if (result.dead) {
+      delete this.state.ships[target.id];
+      if (owner) {
+        owner.score += target.controller === "ai" ? this.getEnemyScore(target as EnemyShip) : 100;
       }
-      break;
+
+      if (target.controller === "player") {
+        this.safeBroadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });
+      } else {
+        this.safeBroadcast({ type: "explosion", x: target.x, y: target.y, kind: target.kind, shipClass: (target as EnemyShip).shipClass });
+      }
+      this.persistence.markDirty();
+    } else {
+      if (result.shieldHit && target.controller === "player") {
+        this.safeBroadcast({ type: "shield_hit", playerId: target.id, reason: "weapon" });
+      } else {
+        this.safeBroadcast({ type: "hit", x: target.x, y: target.y, weapon: bullet.kind });
+      }
     }
   }
 
   private detonateBullet(bid: string, bullet: Bullet, alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
     delete this.state.bullets[bid];
-    broadcast(this.ctx.getWebSockets(), { type: "shockwave", x: bullet.x, y: bullet.y, weapon: bullet.kind });
+    this.safeBroadcast({ type: "shockwave", x: bullet.x, y: bullet.y, weapon: bullet.kind });
+
     if (bullet.ownerController === "player") {
       const owner = this.state.ships[bullet.ownerId] as PlayerShip | undefined;
       this.handleSplash(bullet, aliveEnemies, undefined, owner);
+      this.handlePvPSplash(bullet, undefined, owner);
     } else {
+      // Enemy splash hits ALL alive non-spectator players
       for (const player of alivePlayers) {
+        if (player.team === "spectator") continue;
         if (distSq(bullet, player) <= bullet.splashRadius * bullet.splashRadius) {
           const result = applyShipDamage(player, Math.max(1, Math.round(bullet.damage * 0.7)), false);
-          if (result.dead) broadcast(this.ctx.getWebSockets(), { type: "player_dead", playerId: player.id, x: player.x, y: player.y });
+          if (result.dead) {
+            this.safeBroadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
+            delete this.state.ships[player.id];
+          }
         }
       }
     }
@@ -449,24 +507,48 @@ class GameRoom extends DurableObject<Env> {
   private handleSplash(bullet: Bullet, aliveEnemies: EnemyShip[], excludedEnemyId?: string, owner?: PlayerShip): void {
     if (bullet.splashRadius <= 0) return;
     const kills = applyBulletSplash(bullet.ownerId, bullet.x, bullet.y, bullet.damage, bullet.splashRadius, aliveEnemies, excludedEnemyId);
+
     for (const k of kills) {
       delete this.state.ships[k.enemyId];
       if (owner) owner.score += k.score;
-      broadcast(this.ctx.getWebSockets(), { type: "explosion", x: k.x, y: k.y, kind: k.kind });
+      this.safeBroadcast({ type: "explosion", x: k.x, y: k.y, kind: k.kind });
     }
-    broadcast(this.ctx.getWebSockets(), { type: "splash", x: bullet.x, y: bullet.y, radius: bullet.splashRadius, weapon: bullet.kind });
+    this.safeBroadcast({ type: "splash", x: bullet.x, y: bullet.y, radius: bullet.splashRadius, weapon: bullet.kind });
+  }
+
+  private handlePvPSplash(bullet: Bullet, excludedPlayerId?: string, owner?: PlayerShip): void {
+    if (bullet.splashRadius <= 0 || !owner) return;
+
+    const alivePlayers = this.getPlayerShips().filter(p => p.alive && p.team !== "spectator");
+    const splashDmg = Math.max(1, Math.round(bullet.damage * 0.7));
+
+    for (const p of alivePlayers) {
+      if (p.id === excludedPlayerId || p.team === owner.team) continue;
+      if (distSq(bullet, p) <= bullet.splashRadius * bullet.splashRadius) {
+        const result = applyShipDamage(p, splashDmg, false);
+        if (result.dead) {
+          owner.score += 100;
+          this.safeBroadcast({ type: "player_dead", playerId: p.id, x: p.x, y: p.y });
+          delete this.state.ships[p.id];
+        }
+      }
+    }
   }
 
   private resolveCollisions(alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
     for (const enemy of aliveEnemies) {
       for (const player of alivePlayers) {
-        if (!player.alive || !enemy.alive) continue;
+        if (player.team === "spectator") continue;
+
         const { aHurt } = resolveShipCollision(player, enemy);
         if (!aHurt) continue;
+
         const result = applyShipDamage(player, 1, true);
-        if (result.shieldHit) broadcast(this.ctx.getWebSockets(), { type: "shield_hit", playerId: player.id, reason: "impact" });
+        if (result.shieldHit) {
+          this.safeBroadcast({ type: "shield_hit", playerId: player.id, reason: "impact" });
+        }
         if (result.dead) {
-          broadcast(this.ctx.getWebSockets(), { type: "player_dead", playerId: player.id, x: player.x, y: player.y });
+          this.safeBroadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
           this.persistence.markDirty();
         }
       }
@@ -476,6 +558,7 @@ class GameRoom extends DurableObject<Env> {
   private resolveWaveCompletion(alivePlayers: PlayerShip[]): void {
     const remainingEnemies = this.getEnemyShips().filter(e => e.alive);
     if (remainingEnemies.length > 0 || alivePlayers.length === 0) return;
+
     this.state.wave++;
     for (const player of alivePlayers) {
       player.shield = player.shieldMax;
@@ -486,24 +569,93 @@ class GameRoom extends DurableObject<Env> {
       player.weaponHeat = Math.max(0, player.weaponHeat - 35);
       player.iFrames = 60;
     }
-    for (const enemy of spawnWave(this.state.wave)) this.state.ships[enemy.id] = enemy;
-    broadcast(this.ctx.getWebSockets(), { type: "new_wave", wave: this.state.wave });
+
+    for (const enemy of spawnWave(this.state.wave)) {
+      this.state.ships[enemy.id] = enemy;
+    }
+
+    this.safeBroadcast({ type: "new_wave", wave: this.state.wave });
     this.persistence.markDirty();
   }
 
+  // ── Utility ───────────────────────────────────────────────────────────────
   private findTargetId(player: PlayerShip, weapon: WeaponKind): string | undefined {
     if (weapon !== "guided_missile" && weapon !== "torpedo") return undefined;
+
     let targetId: string | undefined;
-    let bestScore = -Infinity;
-    const rangeSq = weapon === "torpedo" ? 620 * 620 : 760 * 760;
+    let closestDSq = weapon === "torpedo" ? 384400 : 577600; // 620^2 o 760^2
+
     for (const [id, ship] of Object.entries(this.state.ships)) {
-      if (ship.controller !== "ai" || !ship.alive) continue;
+      if (!ship.alive || id === player.id) continue;
+
+      // No apuntar a aliados
+      if (ship.controller === "player" && (ship as PlayerShip).team === player.team) continue;
+      if (ship.controller === "player" && (ship as PlayerShip).team === "spectator") continue;
+
       const dSq = distSq(player, ship);
-      if (dSq > rangeSq) continue;
-      const sc = ship.hp * 2 + ship.armor - Math.sqrt(dSq) * 0.03;
-      if (sc > bestScore) { bestScore = sc; targetId = id; }
+      if (dSq < closestDSq) {
+        closestDSq = dSq;
+        targetId = id;
+      }
     }
     return targetId;
+  }
+
+  private processPlayerMovement(player: PlayerShip, msg: any): void {
+    const hasLocal = typeof msg.forward === "number" || typeof msg.strafe === "number";
+    const hasWorld = typeof msg.vx === "number" || typeof msg.vy === "number";
+
+    if (hasLocal) {
+      player.inputForward = clamp(Number(msg.forward ?? 0), -1, 1);
+      player.inputStrafe = clamp(Number(msg.strafe ?? 0), -1, 1);
+    } else if (hasWorld) {
+      const rawX = clamp(Number(msg.vx ?? 0), -1, 1);
+      const rawY = clamp(Number(msg.vy ?? 0), -1, 1);
+      const cos = Math.cos(player.angle);
+      const sin = Math.sin(player.angle);
+      player.inputForward = clamp(rawX * cos + rawY * sin, -1, 1);
+      player.inputStrafe = clamp(-rawX * sin + rawY * cos, -1, 1);
+    } else {
+      player.inputForward = 0;
+      player.inputStrafe = 0;
+    }
+
+    if (typeof msg.angle === "number") {
+      player.targetAngle = msg.angle;
+    }
+  }
+
+  private processAdminMessage(ws: WebSocket, player: PlayerShip, msg: any): void {
+    const effect = handleAdmin(msg, player, this.state, this.env);
+    switch (effect.kind) {
+      case "authed":
+        this.safeSend(ws, { type: "admin_authed", ok: effect.ok });
+        break;
+      case "reset_all":
+        this.safeBroadcast({ type: "admin_event", action: "reset_all" });
+        this.persistence.markDirty();
+        break;
+      case "kick": {
+        const targetWs = this.ctx.getWebSockets().find(sock => {
+          const attachment = sock.deserializeAttachment() as { playerId?: string } | null;
+          return attachment?.playerId === effect.playerId;
+        });
+        if (targetWs) {
+          try { targetWs.close(1000, "Kicked by admin"); } catch { }
+        }
+        this.safeBroadcast({ type: "player_leave", playerId: effect.playerId });
+        this.persistence.markDirty();
+        break;
+      }
+      case "set_wave":
+        this.safeBroadcast({ type: "new_wave", wave: effect.wave });
+        this.persistence.markDirty();
+        break;
+      case "clear_enemies":
+        this.safeBroadcast({ type: "admin_event", action: "clear_enemies" });
+        this.persistence.markDirty();
+        break;
+    }
   }
 
   private getPlayerShips(): PlayerShip[] {

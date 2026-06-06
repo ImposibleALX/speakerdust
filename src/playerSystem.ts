@@ -6,11 +6,8 @@ import {
   Team, WeaponKind,
   WORLD_W, WORLD_H,
   DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats,
-  SHIP_SHIELD_REGEN_DELAY, SHIP_SHIELD_REGEN_INTERVAL,
-  SHIP_BOOST_COST, SHIP_BOOST_REGEN_BASE,
-  SHIP_BOOST_COOLDOWN, SHIP_HEAT_COOL_BASE,
-  SHIP_COLLISION_DAMAGE_SPEED,
-  SHIP_HEAT_LIMIT, collisionRadiusFor,
+  SHIP_BOOST_COST, SHIP_BOOST_COOLDOWN,
+  SHIP_COLLISION_DAMAGE_SPEED, SHIP_HEAT_LIMIT, collisionRadiusFor,
   clamp, rand, shortestAngleDelta,
 } from "./gameState";
 
@@ -166,15 +163,16 @@ export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBon
   if (ship.boostCooldown > 0) ship.boostCooldown--;
   if (ship.iFrames > 0) ship.iFrames--;
 
-  ship.weaponHeat = Math.max(0, ship.weaponHeat - SHIP_HEAT_COOL_BASE - bonus.heatCool);
-  ship.boostEnergy = Math.min(100, ship.boostEnergy + SHIP_BOOST_REGEN_BASE + bonus.energyRegen);
+  const stats = classStats(ship.shipClass);
+  ship.weaponHeat = Math.max(0, ship.weaponHeat - stats.heatCoolRate - bonus.heatCool);
+  ship.boostEnergy = Math.min(100, ship.boostEnergy + stats.boostRegenRate + bonus.energyRegen);
 
   if (ship.shieldMax > 0 && ship.shield < ship.shieldMax) {
     if (ship.shieldRegenDelay > 0) {
       ship.shieldRegenDelay -= Math.max(1, 1 + bonus.shieldDelay);
     } else {
       ship.shield++;
-      ship.shieldRegenDelay = SHIP_SHIELD_REGEN_INTERVAL;
+      ship.shieldRegenDelay = stats.shieldRegenInterval;
     }
   } else if (ship.shield >= ship.shieldMax) {
     ship.shieldRegenDelay = 0;
@@ -205,25 +203,28 @@ export function applyShipDamage(
   if (!ship.alive) return { dead: false, shieldHit: false, armorHit: false };
   if (ship.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
 
+  const stats = classStats(ship.shipClass);
+  // 1. Escudos (Absorción completa por carga)
   if (ship.shield > 0) {
     ship.shield = Math.max(0, ship.shield - 1);
-    ship.shieldRegenDelay = SHIP_SHIELD_REGEN_DELAY;
+    ship.shieldRegenDelay = stats.shieldRegenDelay;
     ship.iFrames = fromImpact ? 8 : 14;
     return { dead: false, shieldHit: true, armorHit: false };
   }
 
+  // 2. Blindaje (Mitigación profesional: reduce daño pero se desgasta)
   let hullDamage = damage;
   if (ship.armor > 0 && !armorPierce) {
-    const absorbed = Math.min(ship.armor, Math.max(1, Math.ceil(damage * 0.5)));
+    // El blindaje bloquea una porción del daño base según su espesor actual
+    const reduction = Math.floor(ship.armor * 0.45);
+    const absorbed = Math.max(1, Math.min(ship.armor, reduction));
     ship.armor -= absorbed;
-    hullDamage = Math.max(1, damage - absorbed);
-    ship.iFrames = fromImpact ? 7 : 10;
-    if (hullDamage <= 0) return { dead: false, shieldHit: false, armorHit: true };
+    hullDamage = Math.max(1, damage - reduction);
   }
 
   ship.hp = Math.max(0, ship.hp - hullDamage);
   ship.iFrames = fromImpact ? 7 : 10;
-  ship.shieldRegenDelay = Math.max(ship.shieldRegenDelay, SHIP_SHIELD_REGEN_DELAY);
+  ship.shieldRegenDelay = Math.max(ship.shieldRegenDelay, stats.shieldRegenDelay);
 
   if (ship.hp <= 0) {
     ship.alive = false;
@@ -266,8 +267,12 @@ export function resolveShipCollision(
   return { aHurt: relSpeed > SHIP_COLLISION_DAMAGE_SPEED };
 }
 
+export function getWeaponSequenceForClass(shipClass: ShipClass): WeaponKind[] {
+  return classStats(shipClass).weaponSlots;
+}
+
 export function cycleWeapon(ship: Ship): WeaponKind {
-  const slots = ship.weaponSlots.length ? ship.weaponSlots : classStats(ship.shipClass).weaponSlots;
+  const slots = getWeaponSequenceForClass(ship.shipClass);
   const idx = slots.indexOf(ship.weapon);
   ship.weapon = slots[(idx + 1) % slots.length];
   return ship.weapon;

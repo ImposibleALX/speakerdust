@@ -4,9 +4,11 @@
 import {
   GameState, PlayerShip, EnemyShip, ControlPoint, Ship, ShipClass, AiKind, WeaponKind,
   SNAPSHOT_VERSION, DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, AI_KIND_CLASS, AI_STATS,
-  classStats,
+  classStats, WEAPON_STATS,
 } from "./gameState";
 import { initZones } from "./zonesSystem";
+
+const ALLOWED_WEAPONS = new Set(Object.keys(WEAPON_STATS));
 
 export interface PersistedState {
   version: number;
@@ -34,7 +36,7 @@ export function hydrateState(stored: unknown): GameState | null {
   const rawShips = (s.ships ?? {}) as Record<string, unknown>;
   const ships: Record<string, Ship> = {};
   for (const [id, raw] of Object.entries(rawShips)) {
-    const ship = normaliseShip(raw);
+    const ship = ShipSerializer.normalise(raw);
     if (ship) ships[id] = ship;
   }
 
@@ -50,14 +52,6 @@ export function hydrateState(stored: unknown): GameState | null {
   };
 }
 
-function normaliseShip(raw: unknown): Ship | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-  if (r.controller === "player") return normalisePlayerShip(r);
-  if (r.controller === "ai") return normaliseEnemyShip(r);
-  return null;
-}
-
 function num(v: unknown, def: number): number {
   return typeof v === "number" && isFinite(v) ? v : def;
 }
@@ -71,110 +65,122 @@ function bool(v: unknown, def: boolean): boolean {
 }
 function weaponList(v: unknown, def: WeaponKind[]): WeaponKind[] {
   if (!Array.isArray(v)) return [...def];
-  const allowed = new Set(Object.keys({
-    naval_cannon: 1, autocannon: 1, plasma_broadside: 1, railgun: 1,
-    torpedo: 1, guided_missile: 1, energy_bomb: 1, emp_launcher: 1,
-  }));
-  const out = v.filter((x): x is WeaponKind => typeof x === "string" && allowed.has(x));
+  const out = v.filter((x): x is WeaponKind => typeof x === "string" && ALLOWED_WEAPONS.has(x));
   return out.length ? out : [...def];
 }
 
-function normalisePlayerShip(r: Record<string, unknown>): PlayerShip {
-  const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASS_STATS) as ShipClass[]);
-  const stats = classStats(shipClass);
-  const slots = weaponList(r.weaponSlots, stats.weaponSlots);
-  const weapon = str<WeaponKind>(r.weapon, slots[0], slots);
-  return {
-    id: str(r.id, "unknown"),
-    controller: "player",
-    shipClass,
-    role: str(r.role, stats.role),
-    mass: num(r.mass, stats.mass),
-    turnRate: num(r.turnRate, stats.turnRate),
-    weaponSlots: slots,
-    x: num(r.x, 600), y: num(r.y, 400),
-    vx: 0, vy: 0,
-    angle: num(r.angle, -Math.PI / 2),
-    targetAngle: num(r.targetAngle, -Math.PI / 2),
-    hp: num(r.hp, stats.maxHp),
-    maxHp: num(r.maxHp, stats.maxHp),
-    armor: num(r.armor, stats.armorMax),
-    armorMax: num(r.armorMax, stats.armorMax),
-    shieldMax: num(r.shieldMax, stats.shieldMax),
-    shield: num(r.shield, stats.shieldMax),
-    shieldRegenDelay: 0,
-    weapon,
-    shootCooldown: 0,
-    weaponHeat: 0,
-    boostEnergy: num(r.boostEnergy, 100),
-    boostCooldown: 0,
-    boostQueued: false,
-    empTicks: 0,
-    inputForward: 0, inputStrafe: 0,
-    iFrames: 60,
-    alive: bool(r.alive, true),
-    drag: num(r.drag, stats.drag),
-    maxSpeed: num(r.maxSpeed, stats.maxSpeed),
-    thrustForce: num(r.thrustForce, stats.thrustForce),
-    strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
-    name: str(r.name, "CAPTAIN"),
-    color: str(r.color, "hsl(180,80%,65%)"),
-    team: str(r.team, "red", ["red", "blue", "spectator"] as const),
-    score: num(r.score, 0),
-    isAdmin: bool(r.isAdmin, false),
-  };
-}
+/**
+ * ShipSerializer encapsulates the logic for transforming stored data into
+ * live Ship objects. It ensures that dynamic state (cooldowns, physics, heat)
+ * is correctly restored to maintain gameplay continuity.
+ */
+class ShipSerializer {
+  static normalise(raw: unknown): Ship | null {
+    if (!raw || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    if (r.controller === "player") return this.normalisePlayer(r);
+    if (r.controller === "ai") return this.normaliseEnemy(r);
+    return null;
+  }
 
-function normaliseEnemyShip(r: Record<string, unknown>): EnemyShip {
-  const kind = str<AiKind>(r.kind, "corvette", Object.keys(AI_KIND_CLASS) as AiKind[]);
-  const shipClass = AI_KIND_CLASS[kind];
-  const stats = classStats(shipClass);
-  const ai = AI_STATS[kind];
-  return {
-    id: str(r.id, "unknown"),
-    controller: "ai",
-    shipClass,
-    role: stats.role,
-    mass: stats.mass,
-    turnRate: stats.turnRate,
-    weaponSlots: [...stats.weaponSlots],
-    x: num(r.x, 0), y: num(r.y, 0),
-    vx: 0, vy: 0,
-    angle: num(r.angle, 0),
-    targetAngle: num(r.targetAngle, 0),
-    hp: num(r.hp, stats.maxHp),
-    maxHp: num(r.maxHp, stats.maxHp),
-    armor: num(r.armor, stats.armorMax),
-    armorMax: num(r.armorMax, stats.armorMax),
-    shieldMax: Math.max(0, stats.shieldMax - 1),
-    shield: num(r.shield, Math.max(0, stats.shieldMax - 1)),
-    shieldRegenDelay: 0,
-    weapon: ai.preferredWeapon,
-    shootCooldown: Math.floor(Math.random() * 50),
-    weaponHeat: 0,
-    boostEnergy: 0,
-    boostCooldown: 0,
-    boostQueued: false,
-    empTicks: 0,
-    inputForward: 0, inputStrafe: 0,
-    iFrames: 0,
-    alive: bool(r.alive, true),
-    drag: stats.drag,
-    maxSpeed: stats.maxSpeed * 0.92,
-    thrustForce: stats.thrustForce * 0.9,
-    strafeThrustForce: stats.strafeThrustForce * 0.75,
-    kind,
-    wave: num(r.wave, 1),
-    formationIndex: num(r.formationIndex, 0),
-    aiTargetId: r.aiTargetId as string | undefined,
-    aiLastSeenPos: r.aiLastSeenPos as { x: number; y: number } | undefined,
-    aiReactionTicks: num(r.aiReactionTicks, 8),
-    aiAimJitter: num(r.aiAimJitter, 0.05),
-    aiManeuverTimer: num(r.aiManeuverTimer, 60),
-    aiManeuverDir: num(r.aiManeuverDir, 1) === -1 ? -1 : 1,
-    aiStrafing: bool(r.aiStrafing, false),
-    aiFrustration: num(r.aiFrustration, 0),
-  };
+  private static normalisePlayer(r: Record<string, unknown>): PlayerShip {
+    const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASS_STATS) as ShipClass[]);
+    const stats = classStats(shipClass);
+    const slots = weaponList(r.weaponSlots, stats.weaponSlots);
+    const weapon = str<WeaponKind>(r.weapon, slots[0], slots);
+    return {
+      id: str(r.id, "unknown"),
+      controller: "player",
+      shipClass,
+      role: str(r.role, stats.role),
+      mass: num(r.mass, stats.mass),
+      turnRate: num(r.turnRate, stats.turnRate),
+      weaponSlots: slots,
+      x: num(r.x, 600), y: num(r.y, 400),
+      vx: num(r.vx, 0),
+      vy: num(r.vy, 0),
+      angle: num(r.angle, -Math.PI / 2),
+      targetAngle: num(r.targetAngle, -Math.PI / 2),
+      hp: num(r.hp, stats.maxHp),
+      maxHp: num(r.maxHp, stats.maxHp),
+      armor: num(r.armor, stats.armorMax),
+      armorMax: num(r.armorMax, stats.armorMax),
+      shieldMax: num(r.shieldMax, stats.shieldMax),
+      shield: num(r.shield, stats.shieldMax),
+      shieldRegenDelay: num(r.shieldRegenDelay, 0),
+      weapon,
+      shootCooldown: num(r.shootCooldown, 0),
+      weaponHeat: num(r.weaponHeat, 0),
+      boostEnergy: num(r.boostEnergy, 100),
+      boostCooldown: num(r.boostCooldown, 0),
+      boostQueued: false,
+      empTicks: num(r.empTicks, 0),
+      inputForward: 0, inputStrafe: 0,
+      iFrames: num(r.iFrames, 0),
+      alive: bool(r.alive, true),
+      drag: num(r.drag, stats.drag),
+      maxSpeed: num(r.maxSpeed, stats.maxSpeed),
+      thrustForce: num(r.thrustForce, stats.thrustForce),
+      strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
+      name: str(r.name, "CAPTAIN"),
+      color: str(r.color, "hsl(180,80%,65%)"),
+      team: str(r.team, "red", ["red", "blue", "spectator"] as const),
+      score: num(r.score, 0),
+      isAdmin: bool(r.isAdmin, false),
+    };
+  }
+
+  private static normaliseEnemy(r: Record<string, unknown>): EnemyShip {
+    const kind = str<AiKind>(r.kind, "corvette", Object.keys(AI_KIND_CLASS) as AiKind[]);
+    const shipClass = AI_KIND_CLASS[kind];
+    const stats = classStats(shipClass);
+    const ai = AI_STATS[kind];
+    return {
+      id: str(r.id, "unknown"),
+      controller: "ai",
+      shipClass,
+      role: stats.role,
+      mass: stats.mass,
+      turnRate: stats.turnRate,
+      weaponSlots: [...stats.weaponSlots],
+      x: num(r.x, 0), y: num(r.y, 0),
+      vx: num(r.vx, 0), vy: num(r.vy, 0),
+      angle: num(r.angle, 0),
+      targetAngle: num(r.targetAngle, 0),
+      hp: num(r.hp, stats.maxHp),
+      maxHp: num(r.maxHp, stats.maxHp),
+      armor: num(r.armor, stats.armorMax),
+      armorMax: num(r.armorMax, stats.armorMax),
+      shieldMax: Math.max(0, stats.shieldMax - 1),
+      shield: num(r.shield, Math.max(0, stats.shieldMax - 1)),
+      shieldRegenDelay: num(r.shieldRegenDelay, 0),
+      weapon: ai.preferredWeapon,
+      shootCooldown: num(r.shootCooldown, Math.floor(Math.random() * 50)),
+      weaponHeat: num(r.weaponHeat, 0),
+      boostEnergy: num(r.boostEnergy, 0),
+      boostCooldown: num(r.boostCooldown, 0),
+      boostQueued: false,
+      empTicks: num(r.empTicks, 0),
+      inputForward: 0, inputStrafe: 0,
+      iFrames: num(r.iFrames, 0),
+      alive: bool(r.alive, true),
+      drag: stats.drag,
+      maxSpeed: stats.maxSpeed * 0.92,
+      thrustForce: stats.thrustForce * 0.9,
+      strafeThrustForce: stats.strafeThrustForce * 0.75,
+      kind,
+      wave: num(r.wave, 1),
+      formationIndex: num(r.formationIndex, 0),
+      aiTargetId: r.aiTargetId as string | undefined,
+      aiLastSeenPos: r.aiLastSeenPos as { x: number; y: number } | undefined,
+      aiReactionTicks: num(r.aiReactionTicks, 8),
+      aiAimJitter: num(r.aiAimJitter, 0.05),
+      aiManeuverTimer: num(r.aiManeuverTimer, 60),
+      aiManeuverDir: num(r.aiManeuverDir, 1) === -1 ? -1 : 1,
+      aiStrafing: bool(r.aiStrafing, false),
+      aiFrustration: num(r.aiFrustration, 0),
+    };
+  }
 }
 
 function normaliseZones(raw: Record<string, ControlPoint>): Record<string, ControlPoint> {
@@ -199,13 +205,23 @@ export class PersistenceQueue {
   private saving = false;
   private dirtyWhileSaving = false;
   private hydrated = false;
+  private pendingDirty = false;
 
   constructor(private readonly doSave: () => Promise<void>) { }
 
-  setHydrated(): void { this.hydrated = true; }
+  setHydrated(): void {
+    this.hydrated = true;
+    if (this.pendingDirty) {
+      this.pendingDirty = false;
+      this.markDirty();
+    }
+  }
 
   markDirty(): void {
-    if (!this.hydrated) return;
+    if (!this.hydrated) {
+      this.pendingDirty = true;
+      return;
+    }
     if (this.saving) this.dirtyWhileSaving = true;
     else void this.flush();
   }
