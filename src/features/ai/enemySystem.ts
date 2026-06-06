@@ -1,10 +1,13 @@
 // enemySystem.ts (v3 · IA humanizada, consistente con el jugador)
 import {
-  EnemyShip, PlayerShip, Bullet, AiKind, ControlPoint, WeaponKind,
-  WORLD_W, WORLD_H,
-  AI_KIND_CLASS, AI_STATS, WEAPON_STATS, classStats,
-  clamp, rand, uuid, spawnPos, distSq, shortestAngleDelta,
-} from "./gameState";
+  EnemyShip, PlayerShip, AiKind,
+} from "../../core/ships/shipTypes";
+import type { ControlPoint } from "../../core/world/zones";
+import type { Bullet, WeaponKind } from "../../core/combat/weaponStats";
+import { WEAPON_STATS } from "../../core/combat/weaponStats";
+import { WORLD_W, WORLD_H, spawnPos } from "../../core/world/mapConfig";
+import { AI_KIND_CLASS, AI_STATS, classStats } from "../../core/ships/shipStats";
+import { clamp, rand, uuid, distSq, shortestAngleDelta } from "../../core/math";
 
 function approachAngle(current: number, desired: number, maxStep: number): number {
   const delta = shortestAngleDelta(current, desired);

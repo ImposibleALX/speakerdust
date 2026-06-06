@@ -2,11 +2,15 @@
 // State snapshot, versioning, migration guard, and non-lossy write queue.
 
 import {
-  GameState, PlayerShip, EnemyShip, ControlPoint, Ship, ShipClass, AiKind, WeaponKind,
-  SNAPSHOT_VERSION, DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, AI_KIND_CLASS, AI_STATS,
-  classStats, WEAPON_STATS,
-} from "./gameState";
-import { initZones } from "./zonesSystem";
+  GameState,
+} from "../../core/state";
+import type { PlayerShip, EnemyShip, Ship, ShipClass, AiKind } from "../../core/ships/shipTypes";
+import type { ControlPoint } from "../../core/world/zones";
+import type { WeaponKind } from "../../core/combat/weaponStats";
+import { WEAPON_STATS } from "../../core/combat/weaponStats";
+import { DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, AI_KIND_CLASS, AI_STATS, classStats } from "../../core/ships/shipStats";
+import { initZones } from "../../core/world/zones";
+import { SNAPSHOT_VERSION } from "./constants";
 
 const ALLOWED_WEAPONS = new Set(Object.keys(WEAPON_STATS));
 

@@ -6,7 +6,9 @@
 	"upload_source_maps": true,
 	"migrations": [
 		{
-			"new_sqlite_classes": ["GameRoom"],
+			"new_sqlite_classes": [
+				"GameRoom"
+			],
 			"tag": "v1"
 		}
 	],

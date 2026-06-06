@@ -1,9 +1,10 @@
+import { SHIP_PLAYER, SHIP_SCOUT, SHIP_CRUISER_ENEMY, SHIP_CAPITAL } from "./assets/bitmaps.js";
+import { SHIP_ATTACHMENTS } from "./assets/attachments.js";
+import { createPixelShipRenderer } from "./view/renderer.js";
+
 'use strict';
 
-// ════════════════════════════════════════════════════════
-//  SPEAKERDUST — Space Warfare Client  (v3 · fullscreen + teams + admin)
-// ════════════════════════════════════════════════════════
-
+void SHIP_ATTACHMENTS;
 const IS_LOCAL = location.hostname === "localhost" ||
     location.hostname === "127.0.0.1" ||
     location.hostname === "" ||
@@ -13,6 +14,7 @@ const WORKER_WS = IS_LOCAL
     ? "ws://localhost:8787"
     : "wss://speakerdust.soyimposibleyt.workers.dev";
 const ROOM_ID = "sala-1";
+let userInteracted = false;
 
 // ── Constants ──────────────────────────────────────────────
 const CAMERA_SMOOTH = 0.15;
@@ -21,6 +23,7 @@ const PLAYER_TAG_OFFSET = 30;
 const INPUT_RATE = 33;
 const MAX_PARTICLES = 420;
 const MAX_HP = 5;
+const SPECTATOR_CAM_SPEED = 8; // Velocidad de cámara en modo espectador
 
 const COOLDOWN_TABLE = Object.freeze({
     naval_cannon: 1782,
@@ -33,9 +36,23 @@ const COOLDOWN_TABLE = Object.freeze({
     emp_launcher: 2508,
 });
 
+// ── Quick Chat Messages ─────────────────────────────────
+const QUICK_CHAT = [
+    "¡Atacad!",
+    "Defended la base",
+    "Necesito apoyo",
+    "Retirada",
+    "¡Bien hecho!",
+    "Cuidado con el flanco",
+    "Esperad mi señal",
+    "Voy a por el objetivo",
+    "¡Gran trabajo!",
+];
+
 // ── Canvas ─────────────────────────────────────────────
 const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("gameCanvas"));
 const ctx = canvas.getContext("2d");
+const { drawPixelShip } = createPixelShipRenderer(ctx);
 let WORLD_W = 1200, WORLD_H = 800;
 
 // ── HUD elements ─────────────────────────────────────────
@@ -75,11 +92,17 @@ let lastDamageFlash = 0;
 let dmgFlashTimeout = null;
 function flashDamageOverlay() {
     const now = performance.now();
-    if (now - lastDamageFlash < 200) return; // Previene ceguera por spam de hits
+    if (now - lastDamageFlash < 200) return;
     lastDamageFlash = now;
     if (dmgFlashTimeout) clearTimeout(dmgFlashTimeout);
     dmgOverlay.style.opacity = "1";
     dmgFlashTimeout = setTimeout(() => { dmgOverlay.style.opacity = "0"; }, 80);
+}
+
+// Player ship damage flash
+let playerDamageFlashUntil = 0;
+function triggerPlayerDamageFlash() {
+    playerDamageFlashUntil = performance.now() + 120;
 }
 
 // ── Admin panel elements ──────────────────────────────────
@@ -125,7 +148,7 @@ function ensureAudio() {
         masterCompressor.attack.setValueAtTime(0.003, audioCtx.currentTime);
         masterCompressor.release.setValueAtTime(0.1, audioCtx.currentTime);
         masterCompressor.connect(audioCtx.destination);
-        cachedNoiseBuffer = null; // Reiniciar buffer de ruido para el nuevo contexto
+        cachedNoiseBuffer = null;
     }
     if (audioCtx.state === "suspended") audioCtx.resume().catch(() => { });
     return audioCtx;
@@ -167,6 +190,25 @@ function playNoise(duration, gain = 0.06) {
     source.stop(ctxAudio.currentTime + duration);
 }
 
+// ── Haptic Feedback ──────────────────────────────────────
+function triggerHaptic(duration = 50, intensity = 0.5) {
+    try {
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (const gp of gamepads) {
+            if (gp && gp.vibrationActuator) {
+                gp.vibrationActuator.playEffect("dual-rumble", {
+                    duration: duration,
+                    strongMagnitude: intensity,
+                    weakMagnitude: intensity * 0.5,
+                }).catch(() => { });
+            }
+        }
+    } catch (_) { }
+    if (userInteracted && navigator.vibrate) {
+        try { navigator.vibrate(duration); } catch (_) { }
+    }
+}
+
 // ── True Fullscreen Canvas ───────────────────────────────
 function resizeCanvas() {
     const hudH = hudEl?.offsetHeight ?? 0;
@@ -197,113 +239,6 @@ resizeCanvas();
 //  0=transparent 1=hull 2=bridge 3=engine 4=weapon
 //  5=trim 6=panel 7=wing-accent 8=window
 // ════════════════════════════════════════════════════════
-const shipCache = new Map();
-
-function getCachedShip(grid, pal, ps) {
-    const key = grid.length + "_" + grid[0].length + "_" + (pal[1] || "") + "_" + ps;
-    if (shipCache.has(key)) return shipCache.get(key);
-    const rows = grid.length, cols = grid[0].length;
-    const oc = document.createElement("canvas");
-    oc.width = cols * ps; oc.height = rows * ps;
-    const octx = oc.getContext("2d");
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const v = grid[r][c];
-            if (!v || !pal[v]) continue;
-            octx.fillStyle = pal[v];
-            octx.fillRect(c * ps, r * ps, ps, ps);
-        }
-    }
-    const cached = { canvas: oc, cx: oc.width / 2, cy: oc.height / 2 };
-    shipCache.set(key, cached);
-    return cached;
-}
-
-function drawPixelShip(grid, cx, cy, angle, pal, ps) {
-    const cached = getCachedShip(grid, pal, ps);
-    ctx.save();
-    ctx.translate(Math.round(cx), Math.round(cy));
-    ctx.rotate(angle + Math.PI / 2);
-    ctx.drawImage(cached.canvas, -Math.floor(cached.cx), -Math.floor(cached.cy));
-    ctx.restore();
-}
-
-// ════════════════════════════════════════════════════════
-//  SHIP BITMAPS
-// ════════════════════════════════════════════════════════
-const SHIP_PLAYER = [
-    [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 1, 8, 1, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 1, 8, 1, 1, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 2, 2, 2, 1, 0, 0, 0, 0],
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    [0, 4, 0, 1, 5, 6, 6, 6, 5, 1, 0, 4, 0],
-    [0, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 0],
-    [4, 7, 1, 5, 5, 2, 8, 2, 5, 5, 1, 7, 4],
-    [4, 7, 1, 1, 1, 2, 2, 2, 1, 1, 1, 7, 4],
-    [0, 4, 1, 6, 1, 1, 1, 1, 1, 6, 1, 4, 0],
-    [0, 0, 4, 1, 1, 5, 5, 5, 1, 1, 4, 0, 0],
-    [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-    [0, 0, 0, 4, 1, 6, 6, 6, 1, 4, 0, 0, 0],
-    [0, 0, 0, 4, 4, 1, 1, 1, 4, 4, 0, 0, 0],
-    [0, 0, 0, 0, 3, 3, 1, 3, 3, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 3, 0, 3, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0],
-];
-
-const SHIP_SCOUT = [
-    [0, 0, 0, 0, 2, 0, 0, 0, 0],
-    [0, 0, 0, 1, 8, 1, 0, 0, 0],
-    [0, 0, 4, 1, 2, 1, 4, 0, 0],
-    [0, 4, 4, 1, 1, 1, 4, 4, 0],
-    [4, 4, 1, 5, 6, 5, 1, 4, 4],
-    [4, 1, 1, 1, 1, 1, 1, 1, 4],
-    [0, 1, 6, 1, 2, 1, 6, 1, 0],
-    [0, 0, 1, 1, 1, 1, 1, 0, 0],
-    [0, 0, 3, 1, 1, 1, 3, 0, 0],
-    [0, 0, 0, 3, 0, 3, 0, 0, 0],
-    [0, 0, 0, 0, 3, 0, 0, 0, 0],
-];
-
-const SHIP_CRUISER_ENEMY = [
-    [0, 0, 0, 0, 4, 2, 4, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 4, 4, 8, 4, 4, 0, 0, 0, 0, 0],
-    [0, 0, 4, 4, 1, 1, 1, 4, 4, 0, 0, 0, 0],
-    [0, 4, 4, 1, 5, 6, 5, 1, 4, 4, 0, 0, 0],
-    [4, 4, 1, 1, 1, 1, 1, 1, 1, 4, 4, 0, 0],
-    [4, 1, 1, 6, 1, 2, 1, 6, 1, 1, 4, 0, 0],
-    [4, 1, 5, 1, 1, 8, 1, 1, 5, 1, 4, 0, 0],
-    [4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 0, 0],
-    [0, 4, 1, 5, 6, 1, 6, 5, 1, 4, 0, 0, 0],
-    [0, 0, 4, 1, 1, 1, 1, 1, 4, 0, 0, 0, 0],
-    [0, 0, 0, 4, 1, 1, 1, 4, 0, 0, 0, 0, 0],
-    [0, 0, 0, 3, 3, 1, 3, 3, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 3, 0, 3, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0],
-];
-
-const SHIP_CAPITAL = [
-    [0, 0, 0, 0, 0, 0, 0, 4, 2, 4, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 4, 4, 8, 4, 4, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 4, 4, 1, 1, 1, 4, 4, 0, 0, 0, 0, 0],
-    [0, 0, 0, 4, 4, 4, 1, 5, 6, 5, 1, 4, 4, 4, 0, 0, 0],
-    [0, 0, 4, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 0, 0],
-    [0, 4, 4, 1, 1, 5, 1, 2, 8, 2, 1, 5, 1, 1, 4, 4, 0],
-    [4, 4, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 4, 4],
-    [4, 1, 1, 5, 1, 6, 1, 1, 1, 1, 1, 6, 1, 5, 1, 1, 4],
-    [4, 7, 1, 1, 1, 1, 1, 6, 8, 6, 1, 1, 1, 1, 1, 7, 4],
-    [4, 7, 1, 6, 1, 5, 1, 1, 1, 1, 1, 5, 1, 6, 1, 7, 4],
-    [4, 7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 7, 4],
-    [4, 1, 1, 5, 1, 6, 1, 5, 5, 5, 1, 6, 1, 5, 1, 1, 4],
-    [0, 4, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 0],
-    [0, 0, 4, 4, 1, 5, 1, 6, 6, 6, 1, 5, 1, 4, 4, 0, 0],
-    [0, 0, 0, 4, 4, 1, 1, 1, 1, 1, 1, 1, 4, 4, 0, 0, 0],
-    [0, 0, 0, 0, 4, 4, 3, 3, 1, 3, 3, 4, 4, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 3, 3, 0, 3, 0, 3, 3, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-];
-
 // ── Palettes ──────────────────────────────────────────────
 function makePlayerPalette(hsl, team) {
     const [h, s, l] = hsl;
@@ -332,6 +267,10 @@ const PAL_CRUISER_ENEMY = Object.freeze({
 const PAL_CAPITAL = Object.freeze({
     1: "#12204a", 2: "#2d4bb5", 3: "#ffaa00", 4: "#e62a4a",
     5: "#4272f5", 6: "#070c21", 7: "#5788fa", 8: "#a0eeff",
+});
+const PAL_FLASH_RED = Object.freeze({
+    1: "#ff0000", 2: "#ff5555", 3: "#ffaa00", 4: "#ff0000",
+    5: "#aa0000", 6: "#550000", 7: "#ff0000", 8: "#ffffff",
 });
 
 // ════════════════════════════════════════════════════════
@@ -485,7 +424,6 @@ function generateStars() {
 
 function updateStars() {
     for (const s of stars) {
-        s.y = (s.y + s.speed) % WORLD_H;
         s.tw += s.tws;
     }
 }
@@ -513,17 +451,19 @@ function buildNebulas() {
 }
 
 function drawBackground() {
-    ctx.fillStyle = "#02030e";
-    // El fondo negro cubre toda la cámara, no el mundo estático
-    ctx.fillRect(cameraX, cameraY, canvas.width, canvas.height);
+    const dpr = window.devicePixelRatio || 1;
+    const availW = canvas.width / dpr;
+    const availH = canvas.height / dpr;
 
-    // Grid Infinito relativo a la cámara
+    ctx.fillStyle = "#02030e";
+    ctx.fillRect(cameraX, cameraY, availW, availH);
+
     ctx.strokeStyle = "rgba(8,15,48,0.5)";
     ctx.lineWidth = 1;
     const startX = Math.floor(cameraX / 48) * 48;
     const startY = Math.floor(cameraY / 48) * 48;
-    const endX = cameraX + canvas.width;
-    const endY = cameraY + canvas.height;
+    const endX = cameraX + availW + 48;
+    const endY = cameraY + availH + 48;
 
     for (let x = startX; x < endX; x += 48) {
         ctx.beginPath(); ctx.moveTo(x, cameraY); ctx.lineTo(x, endY); ctx.stroke();
@@ -532,20 +472,15 @@ function drawBackground() {
         ctx.beginPath(); ctx.moveTo(cameraX, y); ctx.lineTo(endX, y); ctx.stroke();
     }
 
-    // Estrellas Paralaje Infinito (Siempre siguen la pantalla)
-    const dpr = window.devicePixelRatio || 1;
-    const screenW = canvas.width / dpr;
-    const screenH = canvas.height / dpr;
-
+    // Estrellas infinitas: envolvemos px/py en un área virtual mayor que el monitor (e.g. 2000px)
+    const wrapS = 2000;
     for (const s of stars) {
-        // Cálculo de posición relativa a la cámara con paralaje
-        let px = (s.x - cameraX * (s.speed * 1.5)) % screenW;
-        let py = (s.y - cameraY * (s.speed * 1.5)) % screenH;
+        let px = ((s.x - cameraX * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
+        let py = ((s.y - cameraY * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
 
-        if (px < 0) px += screenW;
-        if (py < 0) py += screenH;
+        if (px > availW || py > availH) continue;
 
-        ctx.globalAlpha = s.alpha * (0.65 + 0.35 * Math.sin(s.tw));
+        ctx.globalAlpha = s.alpha * (0.6 + 0.4 * Math.sin(s.tw));
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(Math.round(cameraX + px), Math.round(cameraY + py), s.size, s.size);
     }
@@ -580,7 +515,7 @@ function drawObjectives(zones) {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius * 0.62, 0, Math.PI * 2); ctx.stroke();
 
-        // Allied/Local Progress Ring
+        // Progress ring based on stored team progress values
         const prog = myTeam === "red" ? zone.redProgress : zone.blueProgress;
         if (prog > 0) {
             ctx.save();
@@ -611,10 +546,13 @@ function drawObjectives(zones) {
 // ════════════════════════════════════════════════════════
 let particles = [];
 
-function explode(x, y, colors, n, spd = 4.5) {
-    for (let i = 0; i < n; i++) {
+// Fix: Escala multiplicada correctamente para naves pesadas
+function explode(x, y, colors, n, spd = 4.5, scale = 1) {
+    const effectiveN = Math.round(n * scale);
+    const effectiveSpd = spd * scale;
+    for (let i = 0; i < effectiveN; i++) {
         const a = Math.random() * Math.PI * 2;
-        const s = Math.random() * spd + 0.8;
+        const s = Math.random() * effectiveSpd + 0.8;
         particles.push({
             x, y,
             vx: Math.cos(a) * s,
@@ -659,6 +597,7 @@ function drawBullets(bullets) {
         const viewW = canvas.width / dpr;
         const viewH = canvas.height / dpr;
 
+        // Frustum Culling dinámico de balas
         if (b.x < cameraX - margin || b.y < cameraY - margin ||
             b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) {
             continue;
@@ -813,7 +752,13 @@ function drawPlayers(players, myId, mx, my, myShield) {
         if (!p.alive) continue;
         const isMe = id === myId;
         const hsl = parseHSL(p.color ?? "hsl(180,80%,60%)");
-        const pal = makePlayerPalette(hsl, p.team);
+
+        let pal = makePlayerPalette(hsl, p.team);
+        // Hit flash animation
+        if (isMe && performance.now() < playerDamageFlashUntil) {
+            pal = PAL_FLASH_RED;
+        }
+
         const teamGlow = p.team === "red" ? "#ff3355" : p.team === "blue" ? "#3399ff" : (p.color ?? "#ffffff");
 
         ctx.shadowBlur = isMe ? 22 : 14;
@@ -822,9 +767,10 @@ function drawPlayers(players, myId, mx, my, myShield) {
         ctx.shadowBlur = 0;
 
         if (isMe) {
-            drawEngineTrail(p.x, p.y, p.angle, false, false, "#ff4400");
+            // Estela con color de equipo
+            const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
+            drawEngineTrail(p.x, p.y, p.angle, false, false, trailColor);
 
-            // Spectatular Boost Trail
             if (keys["shift"] || (serverPlayers[myId]?.boostCooldown > 0)) {
                 const mx_boost = -Math.cos(p.angle);
                 const my_boost = -Math.sin(p.angle);
@@ -839,7 +785,6 @@ function drawPlayers(players, myId, mx, my, myShield) {
             }
         }
 
-        // Shield ring
         if (isMe && myShield > 0) {
             ctx.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
             ctx.lineWidth = 2;
@@ -848,8 +793,9 @@ function drawPlayers(players, myId, mx, my, myShield) {
             ctx.stroke();
         }
 
-        // Aim line + crosshair (only for self)
-        if (isMe) {
+        // Draw HUD local elements (only if playing)
+        if (isMe && !gameOver) {
+            // Crosshair
             ctx.strokeStyle = "rgba(0,229,255,0.22)";
             ctx.lineWidth = 1;
             ctx.setLineDash([5, 7]);
@@ -863,9 +809,22 @@ function drawPlayers(players, myId, mx, my, myShield) {
             ctx.moveTo(mx, my - cs); ctx.lineTo(mx, my + cs);
             ctx.stroke();
             ctx.beginPath(); ctx.arc(mx, my, 4, 0, Math.PI * 2); ctx.stroke();
+
+            // Reload Indicator
+            const now = performance.now();
+            const cd = COOLDOWN_TABLE[myWeapon] || 200;
+            const elapsed = now - lastShot;
+            const remaining = Math.max(0, cd - elapsed);
+            if (remaining > 0) {
+                const barLen = 20;
+                const ratio = remaining / cd;
+                ctx.fillStyle = "rgba(255,255,255,0.7)";
+                ctx.fillRect(mx - barLen / 2, my + 15, barLen, 3);
+                ctx.fillStyle = "#ffaa00";
+                ctx.fillRect(mx - barLen / 2, my + 15, barLen * (1 - ratio), 3);
+            }
         }
 
-        // Name + score tag
         ctx.font = "6px 'Press Start 2P', monospace";
         ctx.textAlign = "center";
         ctx.fillStyle = isMe ? "rgba(0,229,255,0.85)"
@@ -964,6 +923,15 @@ let isMouseShooting = false;
 
 window.addEventListener("keydown", e => {
     keys[e.key.toLowerCase()] = true;
+
+    // Quick chat (1-9)
+    if (!e.ctrlKey && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key) - 1;
+        if (idx < QUICK_CHAT.length) {
+            send("chat", { text: QUICK_CHAT[idx] });
+        }
+    }
+
     if ((e.key.toLowerCase() === "q" || e.key === "Tab") && !e.repeat) {
         e.preventDefault();
         send("switch_weapon");
@@ -976,6 +944,8 @@ window.addEventListener("keydown", e => {
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
         adminPanel?.classList.toggle("hidden");
+        // Show cursor when admin panel visible
+        canvas.style.cursor = adminPanel?.classList.contains("hidden") ? "none" : "default";
     }
 });
 window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
@@ -991,7 +961,7 @@ canvas.addEventListener("mousemove", e => {
     screenMy = e.clientY - r.top;
 });
 canvas.addEventListener("mousedown", e => {
-    if (e.button === 0) {
+    if (e.button === 0 && !gameOver) {
         isMouseShooting = true;
         fireShot();
     } else if (e.button === 2) {
@@ -1023,7 +993,10 @@ function sendBoost() {
 // ════════════════════════════════════════════════════════
 //  ADMIN PANEL LOGIC
 // ════════════════════════════════════════════════════════
-adminClose?.addEventListener("click", () => adminPanel?.classList.add("hidden"));
+adminClose?.addEventListener("click", () => {
+    adminPanel?.classList.add("hidden");
+    canvas.style.cursor = "none";
+});
 adminAuthForm?.addEventListener("submit", (e) => {
     e.preventDefault();
     send("admin_auth", { key: adminKeyInput?.value ?? "" });
@@ -1116,6 +1089,20 @@ const msgHandlers = {
             myMaxHp = me.maxHp ?? myMaxHp;
             myBoostEnergy = me.boostEnergy ?? myBoostEnergy;
             myHeat = me.weaponHeat ?? myHeat;
+
+            // Fix: Resurrection logic on reconnect
+            if (gameOver && me.alive) {
+                gameOver = false;
+                if (overlay) {
+                    overlay.classList.add("hidden");
+                    overlay.style.pointerEvents = "auto";
+                }
+                lastShot = 0; particles = [];
+            }
+            if (!me.alive && !gameOver) {
+                gameOver = true;
+                showGameOver();
+            }
         }
         updateHUD();
     },
@@ -1137,7 +1124,10 @@ const msgHandlers = {
 
             if (gameOver && me.alive) {
                 gameOver = false;
-                overlay?.classList.add("hidden");
+                if (overlay) {
+                    overlay.classList.add("hidden");
+                    overlay.style.pointerEvents = "auto";
+                }
                 lastShot = 0; particles = [];
             }
 
@@ -1182,7 +1172,7 @@ const msgHandlers = {
         const scale = msg.kind === "dreadnought" ? 2.5 : msg.kind === "battleship" ? 1.8 : 1.0;
         if (msg.kind === "battleship" || msg.kind === "dreadnought") {
             explode(msg.x, msg.y, ["#ffcc00", "#ff6600", "#ffffff", "#4466ff"], 40, 7, scale);
-            explode(msg.x, msg.y, ["#ff4400", "#ff9900"], 20, 3);
+            explode(msg.x, msg.y, ["#ff4400", "#ff9900"], 20, 3, 1);
             addScreenShake(8, 10);
             setTimeout(() => {
                 explode(msg.x, msg.y, ["#ff4400", "#ff9900", "#ffff00", "#ffffff"], 60, 5, scale);
@@ -1191,6 +1181,14 @@ const msgHandlers = {
             explode(msg.x, msg.y, ["#cc00ff", "#ff80ff", "#ffffff", "#ff9030"], 24, 5, scale);
         } else {
             explode(msg.x, msg.y, ["#ff2060", "#ffaa20", "#ffffff"], 16, 4, scale);
+        }
+
+        // Extra shake and heavy sound if near player
+        const me = serverPlayers[myId];
+        if (me && me.alive && Math.hypot(msg.x - me.x, msg.y - me.y) < 200) {
+            addScreenShake(6, 8);
+            playImpactSound(true);
+            triggerHaptic(100, 0.8);
         }
     },
     hit(msg) {
@@ -1201,10 +1199,15 @@ const msgHandlers = {
         }
         explode(msg.x, msg.y, ["#ffffff", "#ffdd88"], 6, 2);
 
+        // Minor haptic
         const me = serverPlayers[myId];
         if (me && Math.hypot(msg.x - me.x, msg.y - me.y) < 100) {
             if (msg.weapon === "railgun") addScreenShake(3, 5);
-            if (msg.playerId === myId) flashDamageOverlay();
+            if (msg.playerId === myId) {
+                triggerHaptic(30, 0.3);
+                flashDamageOverlay();
+                triggerPlayerDamageFlash();
+            }
         }
     },
     shield_hit(msg) {
@@ -1215,15 +1218,18 @@ const msgHandlers = {
         }
 
         if (msg.playerId === myId) {
+            triggerHaptic(40, 0.5);
             myShield = Math.max(0, myShield - 1);
-            drawShieldHUD(myShield);
+            drawShieldHUD(myShield, myMaxShield);
             flashDamageOverlay();
+            triggerPlayerDamageFlash();
             const p = serverPlayers[myId];
             if (p) explode(p.x, p.y, ["#4488ff", "#aaccff"], 8, 2);
         }
     },
     player_dead(msg) {
         playExplosionSound();
+        triggerHaptic(150, 1.0);
         explode(msg.x, msg.y, ["#00e5ff", "#ffffff", "#0088ff"], 30, 6);
         if (msg.playerId === myId) {
             gameOver = true;
@@ -1241,22 +1247,35 @@ const msgHandlers = {
         playTone(520, 0.08, "triangle", 0.04, 820);
         currentWave = msg.wave;
         waveFlash = 50;
-        myShield = 3; myHp = myMaxHp; myBoostEnergy = 100; myHeat = 0;
+        myShield = myMaxShield;
+        myHp = myMaxHp;
+        myBoostEnergy = 100;
+        myHeat = 0;
         if (gameOver) {
             gameOver = false;
-            overlay?.classList.add("hidden");
+            if (overlay) {
+                overlay.classList.add("hidden");
+                overlay.style.pointerEvents = "auto";
+            }
             lastShot = 0; particles = [];
         }
         updateHUD();
     },
     objective(msg) {
-        serverZones[msg.zoneId] = {
-            ...(serverZones[msg.zoneId] || {}),
-            id: msg.zoneId,
-            owner: msg.owner,
-            progress: msg.progress,
-            label: msg.label || msg.zoneId,
-        };
+        // Fix: Map single progress to appropriate team field dynamically
+        const zone = serverZones[msg.zoneId] || {};
+        zone.id = msg.zoneId;
+        zone.owner = msg.owner;
+        zone.label = msg.label || msg.zoneId;
+        zone.x = msg.x ?? zone.x;
+        zone.y = msg.y ?? zone.y;
+        zone.radius = msg.radius ?? zone.radius;
+
+        if (msg.owner === "red") zone.redProgress = msg.progress;
+        else if (msg.owner === "blue") zone.blueProgress = msg.progress;
+        else if (msg.owner === "enemies") zone.enemyProgress = msg.progress;
+
+        serverZones[msg.zoneId] = zone;
         playObjectiveSound();
         drawObjectiveHUD(serverZones);
     }
@@ -1283,7 +1302,7 @@ function sendInput() {
     angle = Math.round(angle * 100) / 100;
 
     let angleDiff = Math.abs(angle - lastInputState.angle);
-    if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff; // Fix de salto polar
+    if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
 
     if (forward !== lastInputState.forward ||
         strafe !== lastInputState.strafe ||
@@ -1301,7 +1320,7 @@ function updateHUD() {
     if (waveNumDisp) setDiff(waveNumDisp, String(currentWave || 1));
     if (playerCountDisp) setDiff(playerCountDisp, String(Object.keys(serverPlayers).length));
     drawWeaponHUD(myWeapon);
-    drawShieldHUD(myShield, myMaxShield); // Asumiendo que guardamos myMaxShield en tick
+    drawShieldHUD(myShield, myMaxShield);
     drawHpHUD(myHp, myMaxHp);
     drawEnergyHUD(myBoostEnergy);
     drawHeatHUD(myHeat);
@@ -1321,30 +1340,77 @@ function setStatus(s) {
 }
 
 function showGameOver() {
-    if (overlay) overlay.classList.remove("hidden");
-    if (overlayScore) setDiff(overlayScore, `SCORE: ${String(score || 0).padStart(6, "0")}`);
+    if (overlay) {
+        overlay.classList.remove("hidden");
+        overlay.style.background = "rgba(0,0,0,0.4)";
+        overlay.style.pointerEvents = "auto";
+    }
+    document.body.style.cursor = "default";
+    canvas.style.cursor = "default";
+    if (restartBtn) {
+        restartBtn.style.pointerEvents = "auto";
+    }
+    if (overlayScore) {
+        setDiff(overlayScore, `PUNTOS: ${String(score || 0).padStart(6, "0")}\nMODO ESPECTADOR (WASD)`);
+    }
 }
 
+// Respawn button now sends a respawn command instead of reconnecting
 restartBtn?.addEventListener("click", () => {
-    overlay?.classList.add("hidden");
-    gameOver = false; lastShot = 0;
-    myWeapon = "naval_cannon"; myShield = myMaxShield; myHp = myMaxHp; particles = [];
-    myBoostEnergy = 100; myHeat = 0;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        send("respawn");
+    }
+    updateHUD();
+
+    if (overlay) {
+        overlay.classList.add("hidden");
+        overlay.style.pointerEvents = "none";
+    }
+    document.body.style.cursor = "none";
+    canvas.style.cursor = "none";
+    gameOver = false;
+    lastShot = 0;
+    particles = [];
+    myWeapon = "naval_cannon";
+    myShield = myMaxShield;
+    myHp = myMaxHp;
+    myBoostEnergy = 100;
+    myHeat = 0;
     isMouseShooting = false;
     for (const k in keys) keys[k] = false;
-    drawWeaponHUD(myWeapon); drawShieldHUD(myShield, myMaxShield); drawHpHUD(myHp, myMaxHp);
-    drawEnergyHUD(myBoostEnergy); drawHeatHUD(myHeat); updateHUD();
-    if (socket) {
-        socket.close();
-        socket = null;
-    }
-    connect();
 });
+
+// ── Tutorial overlay (first visit) ───────────────────────
+(function initTutorial() {
+    if (localStorage.getItem("speakerdust_tutorial_seen")) return;
+    const tut = document.createElement("div");
+    tut.id = "tutorial-overlay";
+    tut.innerHTML = `
+        <div style="background:rgba(0,0,0,0.85);color:#fff;padding:20px;border:1px solid #0ff;max-width:320px;text-align:left;font-family:monospace;box-shadow: 0 0 15px #0ff;">
+            <h3 style="color:#0ff; text-align:center;">CONTROLES</h3>
+            <p><b>WASD / Flechas</b> – Mover</p>
+            <p><b>Ratón</b> – Apuntar / Disparar</p>
+            <p><b>Q / Tab</b> – Cambiar arma</p>
+            <p><b>Shift / Click Der</b> – Turbo</p>
+            <p><b>1‑9</b> – Mensajes rápidos</p>
+            <p style="color:#aaa;font-size:0.8em;text-align:center;margin-top:15px;">Click para comenzar</p>
+        </div>`;
+    tut.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;z-index:200;";
+    document.body.appendChild(tut);
+    const dismiss = () => {
+        tut.remove();
+        localStorage.setItem("speakerdust_tutorial_seen", "1");
+        ensureAudio();
+    };
+    tut.addEventListener("click", dismiss);
+    window.addEventListener("keydown", dismiss, { once: true });
+})();
 
 // ════════════════════════════════════════════════════════
 //  MAIN LOOP
 // ════════════════════════════════════════════════════════
 generateStars();
+canvas.style.cursor = "none"; // Ocultar cursor en juego
 
 function gameLoop(now) {
     requestAnimationFrame(gameLoop);
@@ -1355,18 +1421,31 @@ function gameLoop(now) {
     const availW = canvas.width / dpr;
     const availH = canvas.height / dpr;
 
+    // Camera logic (Includes Soft clamp to world bounds & Spectator Mode)
     const me = renderPlayers[myId];
-    if (me) {
+    if (me && !gameOver) {
         let targetCamX = me.x - availW / 2;
         let targetCamY = me.y - availH / 2;
+
         cameraX = lerp(cameraX, targetCamX, CAMERA_SMOOTH);
         cameraY = lerp(cameraY, targetCamY, CAMERA_SMOOTH);
+    } else if (gameOver) {
+        // Free camera in spectator mode
+        let panX = 0, panY = 0;
+        if (keys["w"] || keys["arrowup"]) panY -= 1;
+        if (keys["s"] || keys["arrowdown"]) panY += 1;
+        if (keys["a"] || keys["arrowleft"]) panX -= 1;
+        if (keys["d"] || keys["arrowright"]) panX += 1;
+
+        cameraX += panX * SPECTATOR_CAM_SPEED;
+        cameraY += panY * SPECTATOR_CAM_SPEED;
+
     }
 
     mx = screenMx + cameraX;
     my = screenMy + cameraY;
 
-    if (isMouseShooting || keys[" "]) fireShot();
+    if (!gameOver && (isMouseShooting || keys[" "])) fireShot();
     if (now - lastInputTime >= INPUT_RATE) {
         sendInput();
         lastInputTime = now;
@@ -1375,18 +1454,11 @@ function gameLoop(now) {
     syncRenderState(renderPlayers, serverPlayers, true);
     syncRenderState(renderEnemies, serverEnemies, true);
 
-    // Balas sin interpolación: actualización directa
-    for (const id in serverBullets) {
-        if (!renderBullets[id]) renderBullets[id] = { ...serverBullets[id] };
-        else Object.assign(renderBullets[id], serverBullets[id]);
-    }
-    for (const id in renderBullets) {
-        if (!serverBullets[id]) delete renderBullets[id];
-    }
+    // Render local reference to bullets (avoids spread operator overhead per frame)
+    renderBullets = serverBullets;
 
     tickParticles();
 
-    // Nearby Dreadnought Hum
     let dreadnoughtNear = false;
     for (const e of Object.values(renderEnemies)) {
         if (e.kind === "dreadnought" && me && Math.hypot(e.x - me.x, e.y - me.y) < 150) {
@@ -1395,7 +1467,6 @@ function gameLoop(now) {
     }
     if (dreadnoughtNear && Math.random() < 0.1) playTone(40, 0.1, "sine", 0.02, 35);
 
-    // Camera Shake Application
     if (shakeDuration > 0) {
         const sx = (Math.random() - 0.5) * shakeX * (shakeDuration / 12);
         const sy = (Math.random() - 0.5) * shakeY * (shakeDuration / 12);
@@ -1418,11 +1489,12 @@ function gameLoop(now) {
     drawPlayers(renderPlayers, myId, mx, my, myShield);
     drawParticles();
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset transform just in case
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
-window.addEventListener("click", () => ensureAudio(), { once: true });
-window.addEventListener("keydown", () => ensureAudio(), { once: true });
+// Ensure interactions initialize audio gracefully
+window.addEventListener("click", () => { userInteracted = true; ensureAudio(); }, { once: true });
+window.addEventListener("keydown", () => { userInteracted = true; ensureAudio(); }, { once: true });
 
 document.addEventListener("visibilitychange", () => {
     if (document.hidden && audioCtx) {

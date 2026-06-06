@@ -1,4 +1,5 @@
-import { GameRoom, Env } from "./GameRoom";
+import { GameRoom } from "./infrastructure/GameRoom";
+import type { Env } from "./infrastructure/env";
 export { GameRoom };
 
 export default {

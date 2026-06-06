@@ -1,13 +1,54 @@
 // zonesSystem.ts
 // Naval objective control logic with red vs blue vs enemy progress bars.
 
-import {
-  ControlPoint, PlayerShip, EnemyShip, ZoneOwner, ShipZoneBonus,
-  WORLD_W, WORLD_H,
-  ZONE_CAPTURE_THRESHOLD, ZONE_DECAY_RATE, ZONE_PRESSURE_SCALE,
-  OBJECTIVE_BONUS, ObjectiveKind,
-  clamp,
-} from "./gameState";
+import type { EnemyShip, PlayerShip } from "../ships/shipTypes";
+import { clamp } from "../math";
+import { WORLD_H, WORLD_W } from "./mapConfig";
+
+export type ZoneOwner = "neutral" | "red" | "blue" | "enemies";
+
+export type ObjectiveKind =
+  | "resource_platform"
+  | "comms_relay"
+  | "energy_refinery"
+  | "naval_base"
+  | "radar_station"
+  | "supply_convoy";
+
+export interface ControlPoint {
+  id: string;
+  x: number;
+  y: number;
+  radius: number;
+  owner: ZoneOwner;
+  redProgress: number;
+  blueProgress: number;
+  enemyProgress: number;
+  label: string;
+  objectiveKind: ObjectiveKind;
+}
+
+export interface ShipZoneBonus {
+  heatCool: number;
+  energyRegen: number;
+  shieldDelay: number;
+  repairEveryTicks: number;
+  scoreEveryTicks: number;
+  pressureScale: number;
+}
+
+export const ZONE_CAPTURE_THRESHOLD = 55;
+export const ZONE_DECAY_RATE = 0.28;
+export const ZONE_PRESSURE_SCALE = 0.72;
+
+export const OBJECTIVE_BONUS: Record<ObjectiveKind, ShipZoneBonus> = {
+  resource_platform: { heatCool: 0.05, energyRegen: 0.05, shieldDelay: 0, repairEveryTicks: 0, scoreEveryTicks: 14, pressureScale: 1.05 },
+  comms_relay: { heatCool: 0.04, energyRegen: 0.04, shieldDelay: 0, repairEveryTicks: 0, scoreEveryTicks: 18, pressureScale: 1.25 },
+  energy_refinery: { heatCool: 0.22, energyRegen: 0.24, shieldDelay: 1, repairEveryTicks: 0, scoreEveryTicks: 22, pressureScale: 1.0 },
+  naval_base: { heatCool: 0.08, energyRegen: 0.08, shieldDelay: 2, repairEveryTicks: 180, scoreEveryTicks: 20, pressureScale: 1.0 },
+  radar_station: { heatCool: 0.06, energyRegen: 0.06, shieldDelay: 0, repairEveryTicks: 0, scoreEveryTicks: 18, pressureScale: 1.15 },
+  supply_convoy: { heatCool: 0.1, energyRegen: 0.16, shieldDelay: 1, repairEveryTicks: 240, scoreEveryTicks: 12, pressureScale: 1.0 },
+};
 
 const EMPTY_BONUS: ShipZoneBonus = {
   heatCool: 0,

@@ -2,14 +2,18 @@
 // Player lifecycle and shared naval ship physics.
 
 import {
-  BaseShip, PlayerShip, Ship, ShipClass, ShipZoneBonus,
-  Team, WeaponKind,
-  WORLD_W, WORLD_H,
+  BaseShip, PlayerShip, Ship, ShipClass,
+  Team,
+} from "../../core/ships/shipTypes";
+import type { WeaponKind } from "../../core/combat/weaponStats";
+import { WORLD_W, WORLD_H } from "../../core/world/mapConfig";
+import {
   DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats,
   SHIP_BOOST_COST, SHIP_BOOST_COOLDOWN,
   SHIP_COLLISION_DAMAGE_SPEED, SHIP_HEAT_LIMIT, collisionRadiusFor,
-  clamp, rand, shortestAngleDelta,
-} from "./gameState";
+} from "../../core/ships/shipStats";
+import type { ShipZoneBonus } from "../../core/world/zones";
+import { clamp, rand, shortestAngleDelta } from "../../core/math";
 
 const EMPTY_BONUS: ShipZoneBonus = {
   heatCool: 0,
@@ -132,7 +136,7 @@ export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBon
   ship.vx += rightX * ship.inputStrafe * ship.strafeThrustForce * empMul;
   ship.vy += rightY * ship.inputStrafe * ship.strafeThrustForce * empMul;
 
-  if (ship.boostQueued) {
+  if (ship.boostQueued && ship.alive) {
     if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) {
       const impulse = (1.2 / Math.max(1, ship.mass)) * empMul;
       ship.vx += cos * impulse;
@@ -151,20 +155,17 @@ export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBon
     ship.vx *= s; ship.vy *= s;
   }
 
+  // La física es puramente acumulativa, sin limites de mapa.
   ship.x += ship.vx;
   ship.y += ship.vy;
-  const margin = Math.max(18, collisionRadiusFor(ship) * 0.75);
-  if (ship.x < margin) { ship.x = margin; ship.vx *= -0.22; }
-  if (ship.x > WORLD_W - margin) { ship.x = WORLD_W - margin; ship.vx *= -0.22; }
-  if (ship.y < margin) { ship.y = margin; ship.vy *= -0.22; }
-  if (ship.y > WORLD_H - margin) { ship.y = WORLD_H - margin; ship.vy *= -0.22; }
 
   if (ship.shootCooldown > 0) ship.shootCooldown--;
   if (ship.boostCooldown > 0) ship.boostCooldown--;
   if (ship.iFrames > 0) ship.iFrames--;
 
   const stats = classStats(ship.shipClass);
-  ship.weaponHeat = Math.max(0, ship.weaponHeat - stats.heatCoolRate - bonus.heatCool);
+  const heatCoolRate = stats.heatCoolRate + (bonus?.heatCool ?? 0);
+  ship.weaponHeat = Math.max(0, ship.weaponHeat - heatCoolRate);
   ship.boostEnergy = Math.min(100, ship.boostEnergy + stats.boostRegenRate + bonus.energyRegen);
 
   if (ship.shieldMax > 0 && ship.shield < ship.shieldMax) {
@@ -233,12 +234,18 @@ export function applyShipDamage(
   return { dead: false, shieldHit: false, armorHit: ship.armor > 0 };
 }
 
+// Interfaz para definir de manera estricta los resultados de la colisión
+export interface CollisionResult {
+  aHurt: boolean;
+  bHurt: boolean;
+}
+
 export function resolveShipCollision(
   shipA: BaseShip,
   shipB: BaseShip,
   _kindA?: string,
   _kindB?: string,
-): { aHurt: boolean } {
+): CollisionResult {
   const radA = collisionRadiusFor(shipA);
   const radB = collisionRadiusFor(shipB);
   const combined = radA + radB;
@@ -246,25 +253,38 @@ export function resolveShipCollision(
   const dx = shipA.x - shipB.x;
   const dy = shipA.y - shipB.y;
   const dist = Math.hypot(dx, dy) || 0.001;
-  if (dist >= combined) return { aHurt: false };
+
+  // Si no hay superposición, no hay daño para ninguno
+  if (dist >= combined) return { aHurt: false, bHurt: false };
 
   const nx = dx / dist;
   const ny = dy / dist;
   const overlap = combined - dist;
+
+  // Velocidad de impacto combinada
   const relSpeed = Math.hypot(shipA.vx - shipB.vx, shipA.vy - shipB.vy);
+
   const massA = Math.max(1, shipA.mass);
   const massB = Math.max(1, shipB.mass);
   const totalMass = massA + massB;
   const push = Math.max(0.25, overlap * 0.16);
 
-  shipA.x = clamp(shipA.x + nx * push * (massB / totalMass), 18, WORLD_W - 18);
-  shipA.y = clamp(shipA.y + ny * push * (massB / totalMass), 18, WORLD_H - 18);
-  shipB.x = clamp(shipB.x - nx * push * (massA / totalMass), 18, WORLD_W - 18);
-  shipB.y = clamp(shipB.y - ny * push * (massA / totalMass), 18, WORLD_H - 18);
-  shipA.vx += nx * push * 0.08 / massA; shipA.vy += ny * push * 0.08 / massA;
-  shipB.vx -= nx * push * 0.08 / massB; shipB.vy -= ny * push * 0.08 / massB;
+  // Desplazamiento posicional proporcional a la masa
+  shipA.x += nx * push * (massB / totalMass);
+  shipA.y += ny * push * (massB / totalMass);
+  shipB.x -= nx * push * (massA / totalMass);
+  shipB.y -= ny * push * (massA / totalMass);
 
-  return { aHurt: relSpeed > SHIP_COLLISION_DAMAGE_SPEED };
+  // Transferencia de inercia
+  shipA.vx += nx * push * 0.08 / massA;
+  shipA.vy += ny * push * 0.08 / massA;
+  shipB.vx -= nx * push * 0.08 / massB;
+  shipB.vy -= ny * push * 0.08 / massB;
+
+  // Ambos reciben daño si el golpe supera el umbral de velocidad, haciéndolo 100% simétrico
+  const isHurt = relSpeed > SHIP_COLLISION_DAMAGE_SPEED;
+
+  return { aHurt: isHurt, bHurt: isHurt };
 }
 
 export function getWeaponSequenceForClass(shipClass: ShipClass): WeaponKind[] {

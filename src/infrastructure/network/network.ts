@@ -4,10 +4,11 @@
 //  per-socket rate limiting.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  GameState, PlayerShip, EnemyShip, Ship,
+  GameState,
   toPublicShip, toPublicBullet, toPublicZone,
-  TICK_MS,
-} from "./gameState";
+} from "../../core/state";
+import type { PlayerShip, EnemyShip, Ship } from "../../core/ships/shipTypes";
+import { TICK_MS } from "../../core/world/mapConfig";
 
 // ── Known message types ───────────────────────────────────────────────────────
 const KNOWN_TYPES = new Set([

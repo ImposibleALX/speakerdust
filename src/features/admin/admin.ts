@@ -6,11 +6,13 @@
 //  Set it with: wrangler secret put ADMIN_KEY
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  Env, GameState, PlayerShip, EnemyShip,
-} from "./gameState";
-import { respawnPlayer, resetPlayerFull } from "./playerSystem";
-import { spawnWave } from "./enemySystem";
-import { ParsedMessage } from "./network";
+  GameState,
+} from "../../core/state";
+import type { Env } from "../../infrastructure/env";
+import type { PlayerShip, EnemyShip } from "../../core/ships/shipTypes";
+import { resetPlayerFull } from "../physics/playerSystem";
+import { spawnWave } from "../ai/enemySystem";
+import type { ParsedMessage } from "../../infrastructure/network/network";
 
 // ── Admin effect (returned to orchestrator for broadcasting) ──────────────────
 export type AdminEffect =
