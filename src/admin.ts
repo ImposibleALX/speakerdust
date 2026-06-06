@@ -1,0 +1,93 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  admin.ts
+//  Admin command handling.
+//
+//  ADMIN_KEY is read from env.ADMIN_KEY (Cloudflare secret) — never from source.
+//  Set it with: wrangler secret put ADMIN_KEY
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  Env, GameState, PlayerShip, EnemyShip,
+} from "./gameState";
+import { respawnPlayer, resetPlayerFull } from "./playerSystem";
+import { spawnWave } from "./enemySystem";
+import { ParsedMessage } from "./network";
+
+// ── Admin effect (returned to orchestrator for broadcasting) ──────────────────
+export type AdminEffect =
+  | { kind: "authed";       ok: boolean }
+  | { kind: "reset_all" }
+  | { kind: "kick";         playerId: string }
+  | { kind: "set_wave";     wave: number }
+  | { kind: "clear_enemies" }
+  | { kind: "none" };
+
+// ── Main handler ──────────────────────────────────────────────────────────────
+/**
+ * Handle an admin command message.
+ * Mutates state directly; returns an AdminEffect describing what to broadcast.
+ *
+ * @param msg     Validated ParsedMessage from the WebSocket
+ * @param player  The player who sent the message
+ * @param state   The full game state (mutated in place)
+ * @param env     Worker environment (for ADMIN_KEY)
+ */
+export function handleAdmin(
+  msg:    ParsedMessage,
+  player: PlayerShip,
+  state:  GameState,
+  env:    Env,
+): AdminEffect {
+  switch (msg.type) {
+    case "admin_auth": {
+      // Key comes from env secret, never from source code
+      const ok = typeof msg.key === "string" && msg.key === env.ADMIN_KEY;
+      if (ok) player.isAdmin = true;
+      return { kind: "authed", ok };
+    }
+
+    case "admin_reset_all": {
+      if (!player.isAdmin) return { kind: "none" };
+      for (const ship of Object.values(state.ships)) {
+        if (ship.controller !== "player") continue;
+        const p = ship as PlayerShip;
+        // Full reset: position, velocity, weapons, health, inputs, score
+        resetPlayerFull(p);
+      }
+      return { kind: "reset_all" };
+    }
+
+    case "admin_kick": {
+      if (!player.isAdmin) return { kind: "none" };
+      const targetId = msg.targetId as string | undefined;
+      if (!targetId || !state.ships[targetId]) return { kind: "none" };
+      delete state.ships[targetId];
+      return { kind: "kick", playerId: targetId };
+    }
+
+    case "admin_set_wave": {
+      if (!player.isAdmin) return { kind: "none" };
+      const wave = Math.max(1, Math.floor(Number(msg.wave) || 1));
+      state.wave = wave;
+      // Remove all existing AI ships
+      for (const [id, ship] of Object.entries(state.ships)) {
+        if (ship.controller === "ai") delete state.ships[id];
+      }
+      // Spawn fresh wave
+      for (const enemy of spawnWave(wave)) {
+        state.ships[enemy.id] = enemy;
+      }
+      return { kind: "set_wave", wave };
+    }
+
+    case "admin_clear_enemies": {
+      if (!player.isAdmin) return { kind: "none" };
+      for (const [id, ship] of Object.entries(state.ships)) {
+        if (ship.controller === "ai") delete state.ships[id];
+      }
+      return { kind: "clear_enemies" };
+    }
+
+    default:
+      return { kind: "none" };
+  }
+}

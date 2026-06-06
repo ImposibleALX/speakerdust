@@ -1,0 +1,274 @@
+// playerSystem.ts
+// Player lifecycle and shared naval ship physics.
+
+import {
+  BaseShip, PlayerShip, Ship, ShipClass, ShipZoneBonus,
+  Team, WeaponKind,
+  WORLD_W, WORLD_H,
+  DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats,
+  SHIP_SHIELD_REGEN_DELAY, SHIP_SHIELD_REGEN_INTERVAL,
+  SHIP_BOOST_COST, SHIP_BOOST_REGEN_BASE,
+  SHIP_BOOST_COOLDOWN, SHIP_HEAT_COOL_BASE,
+  SHIP_COLLISION_DAMAGE_SPEED,
+  SHIP_HEAT_LIMIT, collisionRadiusFor,
+  clamp, rand, shortestAngleDelta,
+} from "./gameState";
+
+const EMPTY_BONUS: ShipZoneBonus = {
+  heatCool: 0,
+  energyRegen: 0,
+  shieldDelay: 0,
+  repairEveryTicks: 0,
+  scoreEveryTicks: 0,
+  pressureScale: 1,
+};
+
+function applyClassStats(ship: BaseShip, shipClass: ShipClass): void {
+  const stats = classStats(shipClass);
+  ship.shipClass = shipClass;
+  ship.role = stats.role;
+  ship.mass = stats.mass;
+  ship.turnRate = stats.turnRate;
+  ship.drag = stats.drag;
+  ship.maxSpeed = stats.maxSpeed;
+  ship.thrustForce = stats.thrustForce;
+  ship.strafeThrustForce = stats.strafeThrustForce;
+  ship.weaponSlots = [...stats.weaponSlots];
+  if (!ship.weaponSlots.includes(ship.weapon)) ship.weapon = ship.weaponSlots[0];
+}
+
+export function createPlayer(playerId: string, team: Team): PlayerShip {
+  const hue = Math.floor(Math.random() * 360);
+  const stats = SHIP_CLASS_STATS[DEFAULT_PLAYER_CLASS];
+  return {
+    id: playerId,
+    controller: "player",
+    shipClass: DEFAULT_PLAYER_CLASS,
+    role: stats.role,
+    mass: stats.mass,
+    turnRate: stats.turnRate,
+    weaponSlots: [...stats.weaponSlots],
+    x: rand(200, WORLD_W - 200),
+    y: rand(200, WORLD_H - 200),
+    vx: 0, vy: 0,
+    angle: -Math.PI / 2,
+    targetAngle: -Math.PI / 2,
+    color: `hsl(${hue}, 80%, 65%)`,
+    name: `CAPT-${playerId.slice(0, 4).toUpperCase()}`,
+    team,
+    score: 0,
+    alive: true,
+    weapon: stats.weaponSlots[0],
+    shootCooldown: 0,
+    weaponHeat: 0,
+    boostCooldown: 0,
+    boostEnergy: 100,
+    shieldMax: stats.shieldMax,
+    shield: stats.shieldMax,
+    armor: stats.armorMax,
+    armorMax: stats.armorMax,
+    shieldRegenDelay: 0,
+    hp: stats.maxHp,
+    maxHp: stats.maxHp,
+    empTicks: 0,
+    inputForward: 0,
+    inputStrafe: 0,
+    boostQueued: false,
+    iFrames: 60,
+    isAdmin: false,
+    drag: stats.drag,
+    maxSpeed: stats.maxSpeed,
+    thrustForce: stats.thrustForce,
+    strafeThrustForce: stats.strafeThrustForce,
+  };
+}
+
+export function respawnPlayer(player: PlayerShip): void {
+  const stats = classStats(player.shipClass || DEFAULT_PLAYER_CLASS);
+  player.x = rand(200, WORLD_W - 200);
+  player.y = rand(200, WORLD_H - 200);
+  player.vx = 0; player.vy = 0;
+  player.angle = -Math.PI / 2;
+  player.targetAngle = -Math.PI / 2;
+  player.alive = true;
+  player.weapon = stats.weaponSlots[0];
+  player.shootCooldown = 0;
+  player.weaponHeat = 0;
+  player.boostCooldown = 0;
+  player.boostEnergy = 100;
+  player.shieldMax = stats.shieldMax;
+  player.shield = stats.shieldMax;
+  player.armorMax = stats.armorMax;
+  player.armor = stats.armorMax;
+  player.shieldRegenDelay = 0;
+  player.hp = stats.maxHp;
+  player.maxHp = stats.maxHp;
+  player.empTicks = 0;
+  player.inputForward = 0;
+  player.inputStrafe = 0;
+  player.boostQueued = false;
+  player.iFrames = 60;
+  applyClassStats(player, player.shipClass || DEFAULT_PLAYER_CLASS);
+}
+
+export function resetPlayerFull(player: PlayerShip): void {
+  respawnPlayer(player);
+  player.score = 0;
+}
+
+export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBonus> | number = EMPTY_BONUS): void {
+  const bonus = typeof zoneBonus === "number"
+    ? { ...EMPTY_BONUS, heatCool: zoneBonus * 0.1, energyRegen: zoneBonus * 0.1, shieldDelay: zoneBonus }
+    : { ...EMPTY_BONUS, ...zoneBonus };
+
+  const empMul = ship.empTicks > 0 ? 0.48 : 1;
+  if (ship.empTicks > 0) ship.empTicks--;
+
+  ship.angle += shortestAngleDelta(ship.angle, ship.targetAngle) * ship.turnRate * empMul;
+  const cos = Math.cos(ship.angle);
+  const sin = Math.sin(ship.angle);
+  const rightX = -sin;
+  const rightY = cos;
+
+  ship.vx += cos * ship.inputForward * ship.thrustForce * empMul;
+  ship.vy += sin * ship.inputForward * ship.thrustForce * empMul;
+  ship.vx += rightX * ship.inputStrafe * ship.strafeThrustForce * empMul;
+  ship.vy += rightY * ship.inputStrafe * ship.strafeThrustForce * empMul;
+
+  if (ship.boostQueued) {
+    if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) {
+      const impulse = (1.2 / Math.max(1, ship.mass)) * empMul;
+      ship.vx += cos * impulse;
+      ship.vy += sin * impulse;
+      ship.boostEnergy -= SHIP_BOOST_COST;
+      ship.boostCooldown = SHIP_BOOST_COOLDOWN;
+    }
+    ship.boostQueued = false;
+  }
+
+  ship.vx *= ship.drag;
+  ship.vy *= ship.drag;
+  const spd = Math.hypot(ship.vx, ship.vy);
+  if (spd > ship.maxSpeed) {
+    const s = ship.maxSpeed / spd;
+    ship.vx *= s; ship.vy *= s;
+  }
+
+  ship.x += ship.vx;
+  ship.y += ship.vy;
+  const margin = Math.max(18, collisionRadiusFor(ship) * 0.75);
+  if (ship.x < margin) { ship.x = margin; ship.vx *= -0.22; }
+  if (ship.x > WORLD_W - margin) { ship.x = WORLD_W - margin; ship.vx *= -0.22; }
+  if (ship.y < margin) { ship.y = margin; ship.vy *= -0.22; }
+  if (ship.y > WORLD_H - margin) { ship.y = WORLD_H - margin; ship.vy *= -0.22; }
+
+  if (ship.shootCooldown > 0) ship.shootCooldown--;
+  if (ship.boostCooldown > 0) ship.boostCooldown--;
+  if (ship.iFrames > 0) ship.iFrames--;
+
+  ship.weaponHeat = Math.max(0, ship.weaponHeat - SHIP_HEAT_COOL_BASE - bonus.heatCool);
+  ship.boostEnergy = Math.min(100, ship.boostEnergy + SHIP_BOOST_REGEN_BASE + bonus.energyRegen);
+
+  if (ship.shieldMax > 0 && ship.shield < ship.shieldMax) {
+    if (ship.shieldRegenDelay > 0) {
+      ship.shieldRegenDelay -= Math.max(1, 1 + bonus.shieldDelay);
+    } else {
+      ship.shield++;
+      ship.shieldRegenDelay = SHIP_SHIELD_REGEN_INTERVAL;
+    }
+  } else if (ship.shield >= ship.shieldMax) {
+    ship.shieldRegenDelay = 0;
+  }
+
+  ship.weaponHeat = clamp(ship.weaponHeat, 0, SHIP_HEAT_LIMIT + 40);
+}
+
+export function applyWeaponRecoil(ship: BaseShip, angle: number, recoil: number): void {
+  if (recoil <= 0) return;
+  const impulse = recoil / Math.max(1, ship.mass);
+  ship.vx -= Math.cos(angle) * impulse;
+  ship.vy -= Math.sin(angle) * impulse;
+}
+
+export interface DamageResult {
+  dead: boolean;
+  shieldHit: boolean;
+  armorHit: boolean;
+}
+
+export function applyShipDamage(
+  ship: BaseShip,
+  damage: number,
+  fromImpact = false,
+  armorPierce = false,
+): DamageResult {
+  if (!ship.alive) return { dead: false, shieldHit: false, armorHit: false };
+  if (ship.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
+
+  if (ship.shield > 0) {
+    ship.shield = Math.max(0, ship.shield - 1);
+    ship.shieldRegenDelay = SHIP_SHIELD_REGEN_DELAY;
+    ship.iFrames = fromImpact ? 8 : 14;
+    return { dead: false, shieldHit: true, armorHit: false };
+  }
+
+  let hullDamage = damage;
+  if (ship.armor > 0 && !armorPierce) {
+    const absorbed = Math.min(ship.armor, Math.max(1, Math.ceil(damage * 0.5)));
+    ship.armor -= absorbed;
+    hullDamage = Math.max(1, damage - absorbed);
+    ship.iFrames = fromImpact ? 7 : 10;
+    if (hullDamage <= 0) return { dead: false, shieldHit: false, armorHit: true };
+  }
+
+  ship.hp = Math.max(0, ship.hp - hullDamage);
+  ship.iFrames = fromImpact ? 7 : 10;
+  ship.shieldRegenDelay = Math.max(ship.shieldRegenDelay, SHIP_SHIELD_REGEN_DELAY);
+
+  if (ship.hp <= 0) {
+    ship.alive = false;
+    return { dead: true, shieldHit: false, armorHit: ship.armor > 0 };
+  }
+  return { dead: false, shieldHit: false, armorHit: ship.armor > 0 };
+}
+
+export function resolveShipCollision(
+  shipA: BaseShip,
+  shipB: BaseShip,
+  _kindA?: string,
+  _kindB?: string,
+): { aHurt: boolean } {
+  const radA = collisionRadiusFor(shipA);
+  const radB = collisionRadiusFor(shipB);
+  const combined = radA + radB;
+
+  const dx = shipA.x - shipB.x;
+  const dy = shipA.y - shipB.y;
+  const dist = Math.hypot(dx, dy) || 0.001;
+  if (dist >= combined) return { aHurt: false };
+
+  const nx = dx / dist;
+  const ny = dy / dist;
+  const overlap = combined - dist;
+  const relSpeed = Math.hypot(shipA.vx - shipB.vx, shipA.vy - shipB.vy);
+  const massA = Math.max(1, shipA.mass);
+  const massB = Math.max(1, shipB.mass);
+  const totalMass = massA + massB;
+  const push = Math.max(0.25, overlap * 0.16);
+
+  shipA.x = clamp(shipA.x + nx * push * (massB / totalMass), 18, WORLD_W - 18);
+  shipA.y = clamp(shipA.y + ny * push * (massB / totalMass), 18, WORLD_H - 18);
+  shipB.x = clamp(shipB.x - nx * push * (massA / totalMass), 18, WORLD_W - 18);
+  shipB.y = clamp(shipB.y - ny * push * (massA / totalMass), 18, WORLD_H - 18);
+  shipA.vx += nx * push * 0.08 / massA; shipA.vy += ny * push * 0.08 / massA;
+  shipB.vx -= nx * push * 0.08 / massB; shipB.vy -= ny * push * 0.08 / massB;
+
+  return { aHurt: relSpeed > SHIP_COLLISION_DAMAGE_SPEED };
+}
+
+export function cycleWeapon(ship: Ship): WeaponKind {
+  const slots = ship.weaponSlots.length ? ship.weaponSlots : classStats(ship.shipClass).weaponSlots;
+  const idx = slots.indexOf(ship.weapon);
+  ship.weapon = slots[(idx + 1) % slots.length];
+  return ship.weapon;
+}

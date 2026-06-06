@@ -1,48 +1,54 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speakerdust – Space Warfare Pixel Art</title>
-    <meta name="description" content="Speakerdust: shooter espacial multijugador en tiempo real con naves capitales pixel art y Cloudflare Durable Objects.">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="icon" href="data:,">
+    <title>SPEAKERDUST - Naval Warfare</title>
+    <meta name="description"
+        content="Speakerdust: guerra naval sci-fi multijugador en tiempo real con naves pixel art y Cloudflare Durable Objects.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
     <div id="hud">
         <div id="hud-left">
-            <div class="hud-label">PUNTOS</div>
+            <div class="hud-label">SCORE</div>
             <div id="score">000000</div>
         </div>
         <div id="hud-center">
             <div id="game-title">SPEAKERDUST</div>
-            <div id="wave-info">OLEADA <span id="wave-num">1</span></div>
-            <div id="objective-display">DOMINIO 0/3</div>
+            <div id="wave-info">FLEET <span id="wave-num">1</span></div>
+            <div id="objective-display">OBJECTIVES 0/3</div>
         </div>
         <div id="hud-right">
             <div id="hud-right-top">
                 <div>
-                    <div class="hud-label">JUGADORES</div>
+                    <div class="hud-label">CAPTAINS</div>
                     <div id="player-count">1</div>
                 </div>
-                <div id="team-badge" class="team-badge-red">◆ ROJO</div>
+                <div id="team-badge" class="team-badge-red">RED</div>
             </div>
         </div>
     </div>
 
     <div id="weapon-bar">
-        <div class="hud-label">ARMA</div>
-        <div id="weapon-display">▶ LASER</div>
-        <div class="hud-label" style="margin-top:6px">ESCUDO</div>
-        <div id="shield-display">◈◈◈</div>
-        <div class="hud-label" style="margin-top:6px">CASCO</div>
-        <div id="hull-display">◈◈◈</div>
-        <div class="hud-label" style="margin-top:6px">ENERGÍA</div>
-        <div id="energy-display">██████████</div>
-        <div class="hud-label" style="margin-top:6px">CALOR</div>
-        <div id="heat-display">░░░░░░░░░░</div>
+        <div class="hud-label">WEAPON GROUP</div>
+        <div id="weapon-display">NAVAL CANNON</div>
+        <div class="hud-label" style="margin-top:6px">SHIELD</div>
+        <div id="shield-display">OO</div>
+        <div class="hud-label" style="margin-top:6px">HULL</div>
+        <div id="hp-display">OOOOO</div>
+        <div class="hud-label" style="margin-top:6px">ARMOR</div>
+        <div id="armor-display">O</div>
+        <div class="hud-label" style="margin-top:6px">ENERGY</div>
+        <div id="energy-display">##########</div>
+        <div class="hud-label" style="margin-top:6px">HEAT</div>
+        <div id="heat-display">----------</div>
     </div>
 
     <div id="canvas-wrap">
@@ -50,54 +56,55 @@
     </div>
 
     <div id="status-bar">
-        <div id="connection-status" class="status-connecting">◆ CONECTANDO...</div>
-        <div id="controls-hint">WASD: EMPUJE &nbsp;|&nbsp; RATÓN: APUNTAR &nbsp;|&nbsp; CLIC/ESPACIO: DISPARAR &nbsp;|&nbsp; SHIFT: IMPULSO &nbsp;|&nbsp; Q/TAB: ARMA &nbsp;|&nbsp; Ctrl+Shift+A: ADMIN</div>
+        <div id="connection-status" class="status-connecting">CONNECTING...</div>
+        <div id="controls-hint">WASD: HELM &nbsp;|&nbsp; MOUSE: AIM &nbsp;|&nbsp; CLICK/SPACE: FIRE
+            &nbsp;|&nbsp; SHIFT: ENGINE SURGE &nbsp;|&nbsp; Q/TAB: WEAPON GROUP &nbsp;|&nbsp; Ctrl+Shift+A: ADMIN</div>
     </div>
 
     <div id="screen-overlay" class="hidden">
         <div id="overlay-content">
-            <div id="overlay-title">GAME OVER</div>
-            <div id="overlay-score">PUNTOS: 000000</div>
-            <button id="restart-btn">[ REINICIAR ]</button>
+            <div id="overlay-title">SHIP LOST</div>
+            <div id="overlay-score">SCORE: 000000</div>
+            <button id="restart-btn">[ REDEPLOY ]</button>
         </div>
     </div>
 
-    <!-- ADMIN PANEL -->
     <div id="admin-panel" class="hidden">
         <div id="admin-header">
-            <span>⚙ PANEL ADMIN</span>
-            <button id="admin-close">✕</button>
+            <span>ADMIN PANEL</span>
+            <button id="admin-close">X</button>
         </div>
         <div id="admin-auth-section">
-            <div class="admin-label">CLAVE DE ADMIN</div>
-            <div class="admin-row">
-                <input type="password" id="admin-key-input" placeholder="clave..." />
-                <button id="admin-auth-btn">AUTH</button>
-            </div>
-            <div id="admin-auth-status">◆ NO AUTENTICADO</div>
+            <div class="admin-label">ADMIN KEY</div>
+            <form id="admin-auth-form" class="admin-row">
+                <input type="password" id="admin-key-input" placeholder="key..." />
+                <button type="submit" id="admin-auth-btn">AUTH</button>
+            </form>
+            <div id="admin-auth-status">NOT AUTHENTICATED</div>
         </div>
         <div id="admin-controls" class="hidden">
-            <div class="admin-section-title">── JUGADORES ──</div>
+            <div class="admin-section-title">-- CAPTAINS --</div>
             <div id="admin-player-list"></div>
             <div class="admin-row" style="margin-top:8px">
                 <button id="admin-reset-all-btn" class="admin-btn-danger">RESET ALL</button>
-                <button id="admin-clear-enemies-btn" class="admin-btn-warn">CLEAR ENEMIES</button>
+                <button id="admin-clear-enemies-btn" class="admin-btn-warn">CLEAR HOSTILES</button>
             </div>
 
-            <div class="admin-section-title" style="margin-top:14px">── OLEADA ──</div>
+            <div class="admin-section-title" style="margin-top:14px">-- FLEET --</div>
             <div class="admin-row">
                 <input type="number" id="admin-wave-input" min="1" max="999" value="1" />
-                <button id="admin-set-wave-btn" class="admin-btn-ok">SET WAVE</button>
+                <button id="admin-set-wave-btn" class="admin-btn-ok">SET FLEET</button>
             </div>
 
-            <div class="admin-section-title" style="margin-top:14px">── EQUIPO ──</div>
+            <div class="admin-section-title" style="margin-top:14px">-- TEAM --</div>
             <div class="admin-row">
-                <button id="admin-join-red" class="admin-btn-red">◆ UNIRSE ROJO</button>
-                <button id="admin-join-blue" class="admin-btn-blue">◆ UNIRSE AZUL</button>
+                <button id="admin-join-red" class="admin-btn-red">JOIN RED</button>
+                <button id="admin-join-blue" class="admin-btn-blue">JOIN BLUE</button>
             </div>
         </div>
     </div>
 
     <script src="game.js"></script>
 </body>
+
 </html>
