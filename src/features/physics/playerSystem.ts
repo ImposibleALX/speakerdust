@@ -186,13 +186,6 @@ export function updateShipPhysics(ship: Ship, zoneBonus: Partial<ShipZoneBonus> 
   ship.weaponHeat = clamp(ship.weaponHeat, 0, SHIP_HEAT_LIMIT + 40);
 }
 
-export function applyWeaponRecoil(ship: Ship, angle: number, recoil: number): void {
-  if (recoil <= 0) return;
-  const impulse = recoil / Math.max(1, ship.mass);
-  ship.vx -= Math.cos(angle) * impulse;
-  ship.vy -= Math.sin(angle) * impulse;
-}
-
 export interface DamageResult {
   dead: boolean;
   shieldHit: boolean;
@@ -245,16 +238,9 @@ export interface CollisionResult {
   bHurt: boolean;
 }
 
-/**
- * Resuelve una colisión entre dos naves de forma 100% simétrica,
- * sin temblores ni superposiciones persistentes.
- * Los parámetros _kindA y _kindB se reservan para lógica futura de equipos.
- */
 export function resolveShipCollision(
   shipA: Ship,
   shipB: Ship,
-  _kindA?: string,
-  _kindB?: string,
 ): CollisionResult {
   const radA = collisionRadiusFor(shipA);
   const radB = collisionRadiusFor(shipB);

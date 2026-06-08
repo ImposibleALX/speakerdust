@@ -3,11 +3,11 @@ import type { WeaponKind } from "../../core/combat/weaponStats";
 import { EMP_DURATION_TICKS, WEAPON_STATS } from "../../core/combat/weaponStats";
 import { createProjectile, type Projectile } from "../../core/combat/projectiles";
 import { isAngleInArc } from "../../core/combat/patterns";
-import type { Ship, ShipClass, AiState } from "../../core/ships/shipTypes";
-import { AI_STATS, SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
+import type { Ship, AiState } from "../../core/ships/shipTypes";
+import { classStats, SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
 import { distSq } from "../../core/math";
-import { applyShipDamage, applyWeaponRecoil, resolveShipCollision } from "../physics/playerSystem";
-import { applyBulletSplash, generateEnemyBullets, spawnWave } from "../ai/enemySystem";
+import { applyShipDamage, resolveShipCollision } from "../physics/playerSystem";
+import { applyBulletSplash, computeLeadAngle, spawnWave } from "../ai/enemySystem";
 
 interface PendingShot {
   ownerId: string;
@@ -62,7 +62,6 @@ export class CombatSystem {
 
     ship.shootCooldown = stats.cooldown;
     ship.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, ship.weaponHeat + stats.heat);
-    applyWeaponRecoil(ship, ship.angle, stats.recoil);
 
     if (stats.chargeTicks > 0) {
       this.queueShot(ship.id, ship.controller, weapon, ship.angle, stats.chargeTicks, targetId);
@@ -77,7 +76,8 @@ export class CombatSystem {
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
-    const angle = Math.atan2(target.y + target.vy * 20 - enemy.y, target.x + target.vx * 20 - enemy.x);
+    const lead = weapon === "railgun" ? 30 : 18;
+    const angle = computeLeadAngle(enemy.x, enemy.y, target, lead);
 
     enemy.shootCooldown = stats.cooldown;
     enemy.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, enemy.weaponHeat + stats.heat);
@@ -85,9 +85,7 @@ export class CombatSystem {
     if (stats.chargeTicks > 0) {
       this.queueShot(enemy.id, "ai", weapon, angle, stats.chargeTicks, target.id);
     } else {
-      const state = this.getState();
-      const projectiles = generateEnemyBullets(enemy, target);
-      for (const p of projectiles) state.projectiles[p.id] = p;
+      this.spawnWeaponBullets(enemy.id, "ai", enemy.x, enemy.y, angle, weapon, target.id);
     }
   }
 
@@ -150,7 +148,7 @@ export class CombatSystem {
     if (result.dead) {
       delete state.ships[target.id];
       if (owner) {
-        owner.score += target.controller === "ai" ? AI_STATS[target.shipClass]?.score ?? 0 : 100;
+        owner.score += target.controller === "ai" ? classStats(target.shipClass).score : 100;
       }
       if (target.controller === "player") {
         this.broadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });

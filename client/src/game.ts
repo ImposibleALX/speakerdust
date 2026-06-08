@@ -1,4 +1,4 @@
-import { WEAPON_STATS, DEFAULT_LOADOUTS } from "@speakerdust/shared";
+import { WEAPON_STATS, DEFAULT_LOADOUTS, SHIP_ATTACHMENTS } from "@speakerdust/shared";
 import type { WeaponKind } from "@speakerdust/shared";
 import { SHIP_BITMAPS } from "./assets/bitmaps";
 import { createPixelShipRenderer } from "./renderer/renderer";
@@ -610,42 +610,50 @@ const PAL_FLASH_RED: Record<number, string> = Object.freeze({
     5: "#aa0000", 6: "#550000", 7: "#ff0000", 8: "#ffffff",
 });
 
-function drawEngineTrail(x: number, y: number, angle: number, isHeavy: boolean, isMedium: boolean, color: string, reverse = false): void {
-    const dir = reverse ? 1 : -1;
-    const mx = dir * -Math.cos(angle);
-    const my = dir * -Math.sin(angle);
-    const dist = isHeavy ? 32 : isMedium ? 20 : 10;
-    const spread = isHeavy ? 12 : isMedium ? 6 : 0;
+function drawShipEngines(
+    x: number,
+    y: number,
+    angle: number,
+    shipType: string,
+    color: string,
+    ps: number,
+    reverse: boolean = false
+): void {
+    const attachments = SHIP_ATTACHMENTS[shipType];
+    if (!attachments) return;
 
     ctx.save();
     ctx.globalCompositeOperation = "screen";
 
-    const len = isHeavy ? 12 : 8;
-    for (let i = 0; i < len; i++) {
-        const t = i / len;
-        const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
-        const baseX = x + mx * (dist + i * 5 + pulse);
-        const baseY = y + my * (dist + i * 5 + pulse);
-        const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.6);
+    const dir = reverse ? -1 : 1;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
 
-        const renderTrailPoint = (offsetX: number, offsetY: number) => {
-            const ex = baseX + offsetX + jitter;
-            const ey = baseY + offsetY + jitter;
+    for (const engine of attachments.engines) {
+        const mx = engine.x * ps;
+        const my = (engine.y * ps) * dir;
+
+        const ex = x + mx * cos - my * sin;
+        const ey = y + mx * sin + my * cos;
+
+        const len = engine.size === "large" ? 14 : engine.size === "medium" ? 10 : 7;
+        const width = engine.size === "large" ? 5 : engine.size === "medium" ? 3 : 2;
+
+        for (let i = 0; i < len; i++) {
+            const t = i / len;
+            const trailDx = -cos * dir;
+            const trailDy = -sin * dir;
+
+            const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
+            const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.5);
+
+            const px = ex + trailDx * (i * 4 + pulse) + jitter;
+            const py = ey + trailDy * (i * 4 + pulse) + jitter;
+
             ctx.globalAlpha = (1 - t) * 0.7;
             ctx.fillStyle = i < 2 ? "#ffffff" : color;
-            const sz = Math.max(1, Math.floor((1 - t) * (isHeavy ? 6 : 4)));
-            ctx.fillRect(Math.round(ex), Math.round(ey), sz, sz);
-        };
-
-        if (isHeavy) {
-            renderTrailPoint(0, 0);
-            renderTrailPoint(-my * spread, mx * spread);
-            renderTrailPoint(my * spread, -mx * spread);
-        } else if (isMedium) {
-            renderTrailPoint(-my * spread, mx * spread);
-            renderTrailPoint(my * spread, -mx * spread);
-        } else {
-            renderTrailPoint(0, 0);
+            const sz = Math.max(1, Math.floor((1 - t) * width * (ps / 2.5)));
+            ctx.fillRect(Math.round(px), Math.round(py), sz, sz);
         }
     }
     ctx.restore();
@@ -662,11 +670,8 @@ function drawEnemies(enemies: Record<string, any>): void {
 
         const glowC = isHeavy ? "#4466ff" : isMedium ? "#cc00ff" : "#ff2060";
 
-        const grid = isHeavy
-            ? SHIP_BITMAPS.capital!
-            : isMedium
-                ? SHIP_BITMAPS.cruiser!
-                : SHIP_BITMAPS.scout!;
+        const shipType = isHeavy ? "capital" : isMedium ? "cruiser" : "scout";
+        const grid = SHIP_BITMAPS[shipType]!;
 
         const pal = isHeavy
             ? PAL_CAPITAL
@@ -674,7 +679,7 @@ function drawEnemies(enemies: Record<string, any>): void {
                 ? PAL_CRUISER_ENEMY
                 : PAL_SCOUT;
 
-        drawEngineTrail(e.x, e.y, e.angle, isHeavy, isMedium, glowC);
+        drawShipEngines(e.x, e.y, e.angle, shipType, glowC, ps);
 
         ctx.shadowBlur = isHeavy ? 22 : 14;
         ctx.shadowColor = glowC;
@@ -714,9 +719,10 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
         ctx.shadowBlur = 0;
 
         if (isMe) {
+            const ps = 3;
             const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
             const reversing = keys["s"] || keys["arrowdown"];
-            drawEngineTrail(p.x, p.y, p.angle, false, false, trailColor, reversing);
+            drawShipEngines(p.x, p.y, p.angle, "player", trailColor, ps, reversing);
 
             if ((keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28) {
                 const mx_boost = -Math.cos(p.angle);

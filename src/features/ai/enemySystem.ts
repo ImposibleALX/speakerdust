@@ -1,9 +1,9 @@
 import type { Ship, ShipClass, AiState } from "../../core/ships/shipTypes";
 import type { ControlPoint } from "../../core/world/zones";
+import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
-import { createProjectile, type Projectile } from "../../core/combat/projectiles";
-import { WORLD_W, WORLD_H, spawnPos } from "../../core/world/mapConfig";
-import { AI_STATS, SHIP_HEAT_LIMIT, classStats } from "../../core/ships/shipStats";
+import { SHIP_HEAT_LIMIT, classStats } from "../../core/ships/shipStats";
+import { spawnPos } from "../../core/world/mapConfig";
 import { clamp, rand, uuid, distSq, shortestAngleDelta } from "../../core/math";
 import { applyShipDamage } from "../physics/playerSystem";
 
@@ -99,6 +99,12 @@ export function computeEnemyCounts(ships: Ship[]): Record<ShipClass, number> {
   return counts as Record<ShipClass, number>;
 }
 
+export function computeLeadAngle(x: number, y: number, target: Ship, lead: number): number {
+  const leadX = target.x + target.vx * lead;
+  const leadY = target.y + target.vy * lead;
+  return Math.atan2(leadY - y, leadX - x);
+}
+
 export function updateEnemyInputs(
   enemy: Ship,
   ai: AiState,
@@ -106,12 +112,10 @@ export function updateEnemyInputs(
   enemyCounts: Record<ShipClass, number>,
   nearestZone: Pick<ControlPoint, "x" | "y" | "radius"> | null,
 ): void {
-  if (enemy.shootCooldown > 0) enemy.shootCooldown--;
-
   if (enemy.boostCooldown > 0) enemy.boostCooldown--;
   if (enemy.boostEnergy < 100) enemy.boostEnergy = Math.min(100, enemy.boostEnergy + classStats(enemy.shipClass).boostRegenRate);
 
-  const stats = AI_STATS[enemy.shipClass];
+  const stats = classStats(enemy.shipClass);
 
   let target: Ship | null = null;
   let targetDistSq = Infinity;
@@ -142,8 +146,8 @@ export function updateEnemyInputs(
     }
   }
 
-  let aimTargetX = WORLD_W * 0.5;
-  let aimTargetY = WORLD_H * 0.5;
+  let aimTargetX = 600;
+  let aimTargetY = 400;
   if (target) {
     aimTargetX = target.x;
     aimTargetY = target.y;
@@ -269,6 +273,46 @@ export function updateEnemyInputs(
   }
 }
 
+export function updateEnemyCombat(
+  enemy: Ship,
+  ai: AiState,
+  alivePlayers: Ship[],
+  fireEnemyWeapon: (enemy: Ship, target: Ship) => void,
+): void {
+  if (alivePlayers.length === 0) return;
+
+  let closestPlayer: Ship | null = null;
+  let closestDSq = Infinity;
+
+  if (ai.targetId) {
+    const target = alivePlayers.find(p => p.id === ai.targetId);
+    if (target) {
+      const dSq = distSq(enemy, target);
+      closestPlayer = target;
+      closestDSq = dSq;
+    }
+  }
+
+  if (!closestPlayer) {
+    for (const p of alivePlayers) {
+      const dSq = distSq(enemy, p);
+      if (dSq < closestDSq) {
+        closestDSq = dSq;
+        closestPlayer = p;
+      }
+    }
+  }
+
+  if (!closestPlayer) return;
+
+  const angToTarget = Math.atan2(closestPlayer.y - enemy.y, closestPlayer.x - enemy.x);
+  const aimError = shortestAngleDelta(enemy.angle, angToTarget);
+
+  if (shouldEnemyFire(enemy, ai, closestDSq, aimError)) {
+    fireEnemyWeapon(enemy, closestPlayer);
+  }
+}
+
 export function shouldEnemyFire(
   enemy: Ship,
   ai: AiState,
@@ -277,7 +321,7 @@ export function shouldEnemyFire(
 ): boolean {
   if (enemy.shootCooldown > 0 || enemy.weaponHeat >= SHIP_HEAT_LIMIT) return false;
 
-  const rangeSq = (AI_STATS[enemy.shipClass].idealRange + 180) ** 2;
+  const rangeSq = (classStats(enemy.shipClass).idealRange + 180) ** 2;
   if (targetDistSq > rangeSq) {
     ai.frustration += 0.2;
     return false;
@@ -288,27 +332,6 @@ export function shouldEnemyFire(
       enemy.shipClass === "cruiser" ? 0.30 : 0.34;
 
   return Math.abs(aimErrorRad) <= maxAimError;
-}
-
-export function generateEnemyBullets(enemy: Ship, target: Ship): Projectile[] {
-  const weapon = enemy.weapon;
-  const stats = WEAPON_STATS[weapon];
-
-  const leadX = target.x + target.vx * (weapon === "railgun" ? 30 : 18);
-  const leadY = target.y + target.vy * (weapon === "railgun" ? 30 : 18);
-  const ang = Math.atan2(leadY - enemy.y, leadX - enemy.x);
-
-  enemy.shootCooldown = stats.cooldown;
-  enemy.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, enemy.weaponHeat + stats.heat);
-
-  const projectiles: Projectile[] = [];
-  const count = weapon === "plasma_broadside" ? 3 : weapon === "autocannon" ? 2 : 1;
-  const offsets = count === 3 ? [-0.18, 0, 0.18] : count === 2 ? [-0.06, 0.06] : [0];
-
-  for (const off of offsets) {
-    projectiles.push(createProjectile(enemy.id, "ai", enemy.x, enemy.y, ang + off, weapon));
-  }
-  return projectiles;
 }
 
 export interface SplashKill {
@@ -346,7 +369,7 @@ export function applyBulletSplash(
     const result = applyShipDamage(enemy, finalDamage, false, false);
 
     if (result.dead) {
-      const { score } = AI_STATS[enemy.shipClass];
+      const score = classStats(enemy.shipClass).score;
       kills.push({ enemyId: enemy.id, x: enemy.x, y: enemy.y, shipClass: enemy.shipClass, score });
     }
   }

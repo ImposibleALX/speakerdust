@@ -89,7 +89,7 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     ctx.restore();
 
     if (shipType && loadout) {
-      renderWeaponAttachments(ctx, shipType, loadout, cx, cy, angle, tick ?? 0);
+      renderWeaponAttachments(ctx, shipType, loadout, cx, cy, angle, tick ?? 0, ps);
     }
   }
 
@@ -100,7 +100,8 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     shipX: number,
     shipY: number,
     shipAngle: number,
-    tick: number
+    tick: number,
+    ps: number
   ): void {
     const attachments = SHIP_ATTACHMENTS[shipType];
     if (!attachments) return;
@@ -111,8 +112,11 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
 
       const cos = Math.cos(shipAngle);
       const sin = Math.sin(shipAngle);
-      const worldX = shipX + mount.x * cos - mount.y * sin;
-      const worldY = shipY + mount.x * sin + mount.y * cos;
+
+      const mx = mount.x * ps;
+      const my = mount.y * ps;
+      const worldX = shipX + mx * cos - my * sin;
+      const worldY = shipY + mx * sin + my * cos;
 
       let weaponAngle = shipAngle;
       if (mount.mountArc === "broadside") {

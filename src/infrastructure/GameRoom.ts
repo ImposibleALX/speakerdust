@@ -3,18 +3,14 @@ import type { Env } from "./env";
 import type { GameState } from "../core/state";
 import type { Ship, Team, AiState } from "../core/ships/shipTypes";
 import type { WeaponKind } from "../core/combat/weaponStats";
-import { WEAPON_STATS, HITBOX_PLAYER_BULLET_DEFAULT_SQ, HITBOX_ENEMY_BULLET_SQ, EMP_DURATION_TICKS } from "../core/combat/weaponStats";
-import { AI_STATS, SHIP_HEAT_LIMIT, SHIP_BOOST_COST, collisionRadiusFor } from "../core/ships/shipStats";
+import { classStats, SHIP_BOOST_COST } from "../core/ships/shipStats";
 import { TICK_MS, SAVE_EVERY_TICKS } from "../core/world/mapConfig";
-import { clamp, uuid, distSq, shortestAngleDelta } from "../core/math";
-import { isAngleInArc } from "../core/combat/patterns";
+import { clamp, uuid } from "../core/math";
 import {
-  createPlayer, respawnPlayer, updateShipPhysics, applyShipDamage,
-  resolveShipCollision, applyWeaponRecoil, cycleWeapon,
+  createPlayer, respawnPlayer, updateShipPhysics, cycleWeapon,
 } from "../features/physics/playerSystem";
 import {
-  spawnWave, updateEnemyInputs, computeEnemyCounts, shouldEnemyFire,
-  generateEnemyBullets, applyBulletSplash,
+  spawnWave, updateEnemyInputs, updateEnemyCombat, computeEnemyCounts,
 } from "../features/ai/enemySystem";
 import { initZones, updateControlPoints, getZoneBonusForShip, findNearestZone } from "../core/world/zones";
 import { PersistenceQueue, serializeForStorage, hydrateState, PersistedState } from "./persistence/persistence";
@@ -328,25 +324,7 @@ class GameRoom extends DurableObject<Env> {
       const nearestZone = findNearestZone(enemy.x, enemy.y, st.zones);
       updateEnemyInputs(enemy, ai, alivePlayers, enemyCounts, nearestZone);
       updateShipPhysics(enemy, 0);
-
-      if (alivePlayers.length > 0) {
-        let closestPlayer: Ship | null = null;
-        let closestDSq = Infinity;
-        for (const p of alivePlayers) {
-          const dSq = distSq(enemy, p);
-          if (dSq < closestDSq) {
-            closestDSq = dSq;
-            closestPlayer = p;
-          }
-        }
-        if (closestPlayer) {
-          const angToTarget = Math.atan2(closestPlayer.y - enemy.y, closestPlayer.x - enemy.x);
-          const aimError = shortestAngleDelta(enemy.angle, angToTarget);
-          if (shouldEnemyFire(enemy, ai, closestDSq, aimError)) {
-            this.combat.fireEnemyWeapon(enemy, closestPlayer);
-          }
-        }
-      }
+      updateEnemyCombat(enemy, ai, alivePlayers, (e, t) => this.combat.fireEnemyWeapon(e, t));
     }
 
     // Combat Resolution
@@ -446,6 +424,6 @@ class GameRoom extends DurableObject<Env> {
   }
 
   private getEnemyScore(ship: Ship): number {
-    return AI_STATS[ship.shipClass]?.score ?? 0;
+    return classStats(ship.shipClass).score;
   }
 }

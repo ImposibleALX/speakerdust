@@ -18,6 +18,8 @@ export interface ShipClassStats {
   shieldRegenInterval: number;
   collisionRadius: number;
   weaponSlots: WeaponKind[];
+  score: number;
+  idealRange: number;
 }
 
 import type { WeaponKind } from "../combat/weaponStats";
@@ -32,6 +34,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.085, heatCoolRate: 0.65, boostRegenRate: 0.42,
     shieldRegenDelay: 120, shieldRegenInterval: 140, collisionRadius: 23,
     weaponSlots: ["autocannon", "naval_cannon", "guided_missile", "torpedo"],
+    score: 120, idealRange: 250,
   },
   destroyer: {
     label: "Destroyer", role: "Line combatant",
@@ -40,6 +43,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.055, heatCoolRate: 0.55, boostRegenRate: 0.38,
     shieldRegenDelay: 150, shieldRegenInterval: 190, collisionRadius: 30,
     weaponSlots: ["naval_cannon", "autocannon", "torpedo", "emp_launcher"],
+    score: 260, idealRange: 330,
   },
   missile_frigate: {
     label: "Missile Frigate", role: "Standoff pressure",
@@ -48,6 +52,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.06, heatCoolRate: 0.58, boostRegenRate: 0.40,
     shieldRegenDelay: 140, shieldRegenInterval: 170, collisionRadius: 28,
     weaponSlots: ["guided_missile", "torpedo", "autocannon", "emp_launcher"],
+    score: 320, idealRange: 410,
   },
   cruiser: {
     label: "Cruiser", role: "Area control",
@@ -56,6 +61,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.043, heatCoolRate: 0.48, boostRegenRate: 0.35,
     shieldRegenDelay: 180, shieldRegenInterval: 220, collisionRadius: 37,
     weaponSlots: ["plasma_broadside", "naval_cannon", "energy_bomb", "emp_launcher"],
+    score: 520, idealRange: 430,
   },
   battlecruiser: {
     label: "Battlecruiser", role: "Heavy pursuit",
@@ -64,6 +70,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.034, heatCoolRate: 0.45, boostRegenRate: 0.32,
     shieldRegenDelay: 200, shieldRegenInterval: 240, collisionRadius: 44,
     weaponSlots: ["railgun", "naval_cannon", "guided_missile", "plasma_broadside"],
+    score: 700, idealRange: 480,
   },
   battleship: {
     label: "Battleship", role: "Dominant artillery",
@@ -72,6 +79,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.027, heatCoolRate: 0.40, boostRegenRate: 0.30,
     shieldRegenDelay: 220, shieldRegenInterval: 280, collisionRadius: 52,
     weaponSlots: ["railgun", "plasma_broadside", "naval_cannon", "emp_launcher"],
+    score: 900, idealRange: 520,
   },
   dreadnought: {
     label: "Dreadnought", role: "Fleet anchor",
@@ -80,17 +88,8 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     turnRate: 0.018, heatCoolRate: 0.35, boostRegenRate: 0.25,
     shieldRegenDelay: 250, shieldRegenInterval: 320, collisionRadius: 66,
     weaponSlots: ["energy_bomb", "plasma_broadside", "railgun", "emp_launcher"],
+    score: 2000, idealRange: 580,
   },
-};
-
-export const AI_STATS: Record<ShipClass, { score: number; idealRange: number }> = {
-  corvette:        { score: 120,  idealRange: 250 },
-  destroyer:       { score: 260,  idealRange: 330 },
-  missile_frigate: { score: 320,  idealRange: 410 },
-  cruiser:         { score: 520,  idealRange: 430 },
-  battlecruiser:   { score: 700,  idealRange: 480 },
-  battleship:      { score: 900,  idealRange: 520 },
-  dreadnought:     { score: 2000, idealRange: 580 },
 };
 
 export const SHIP_BOOST_COST = 34;
