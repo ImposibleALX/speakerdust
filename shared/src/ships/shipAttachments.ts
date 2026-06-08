@@ -23,42 +23,42 @@ export type ShipBitmapKey = "player" | "scout" | "cruiser" | "capital";
 export const SHIP_ATTACHMENTS: Record<string, ShipAttachments> = {
   player: {
     engines: [
-      { id: "engine_main", x: 0, y: 8, mountArc: "forward", size: "medium" },
+      { id: "engine_main", x: 8, y: 0, mountArc: "forward", size: "medium" },
     ],
     weapons: [
-      { id: "mount_front", x: 0, y: -8, mountArc: "forward", size: "medium" },
-      { id: "mount_left", x: -4, y: 0, mountArc: "broadside", size: "small" },
-      { id: "mount_right", x: 4, y: 0, mountArc: "broadside", size: "small" },
+      { id: "mount_front", x: -8, y: 0, mountArc: "forward", size: "medium" },
+      { id: "mount_left", x: 0, y: 4, mountArc: "broadside", size: "small" },
+      { id: "mount_right", x: 0, y: -4, mountArc: "broadside", size: "small" },
     ],
   },
   scout: {
     engines: [
-      { id: "engine_main", x: 0, y: 5, mountArc: "forward", size: "small" },
+      { id: "engine_main", x: 5, y: 0, mountArc: "forward", size: "small" },
     ],
     weapons: [
-      { id: "mount_front", x: 0, y: -5, mountArc: "forward", size: "small" },
+      { id: "mount_front", x: -5, y: 0, mountArc: "forward", size: "small" },
     ],
   },
   cruiser: {
     engines: [
-      { id: "engine_left", x: -2, y: 6.5, mountArc: "forward", size: "medium" },
-      { id: "engine_right", x: 2, y: 6.5, mountArc: "forward", size: "medium" },
+      { id: "engine_left", x: 6.5, y: 2, mountArc: "forward", size: "medium" },
+      { id: "engine_right", x: 6.5, y: -2, mountArc: "forward", size: "medium" },
     ],
     weapons: [
-      { id: "mount_front", x: 0, y: -6.5, mountArc: "forward", size: "large" },
-      { id: "mount_left", x: -5, y: -0.5, mountArc: "broadside", size: "medium" },
-      { id: "mount_right", x: 5, y: -0.5, mountArc: "broadside", size: "medium" },
+      { id: "mount_front", x: -6.5, y: 0, mountArc: "forward", size: "large" },
+      { id: "mount_left", x: -0.5, y: 5, mountArc: "broadside", size: "medium" },
+      { id: "mount_right", x: -0.5, y: -5, mountArc: "broadside", size: "medium" },
     ],
   },
   capital: {
     engines: [
-      { id: "engine_left", x: -2, y: 9, mountArc: "forward", size: "large" },
-      { id: "engine_right", x: 2, y: 9, mountArc: "forward", size: "large" },
+      { id: "engine_left", x: 9, y: 2, mountArc: "forward", size: "large" },
+      { id: "engine_right", x: 9, y: -2, mountArc: "forward", size: "large" },
     ],
     weapons: [
-      { id: "mount_front", x: 0, y: -9, mountArc: "forward", size: "large" },
-      { id: "mount_left", x: -6, y: -1, mountArc: "broadside", size: "large" },
-      { id: "mount_right", x: 6, y: -1, mountArc: "broadside", size: "large" },
+      { id: "mount_front", x: -9, y: 0, mountArc: "forward", size: "large" },
+      { id: "mount_left", x: -1, y: 6, mountArc: "broadside", size: "large" },
+      { id: "mount_right", x: -1, y: -6, mountArc: "broadside", size: "large" },
     ],
   },
 };

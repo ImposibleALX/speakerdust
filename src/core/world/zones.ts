@@ -1,5 +1,4 @@
 // zonesSystem.ts
-// Naval objective control logic with red vs blue vs enemy progress bars.
 
 import type { Ship } from "../ships/shipTypes";
 import { clamp } from "../math";
@@ -37,7 +36,9 @@ export interface ShipZoneBonus {
   pressureScale: number;
 }
 
+// AJUSTES PARA ESTABILIDAD
 export const ZONE_CAPTURE_THRESHOLD = 55;
+export const ZONE_LOSS_THRESHOLD = 45; // Histeresis: Si la capturas en 55, no la pierdes hasta que baje de 45.
 export const ZONE_DECAY_RATE = 0.28;
 export const ZONE_PRESSURE_SCALE = 0.72;
 
@@ -67,14 +68,7 @@ export function initZones(): Record<string, ControlPoint> {
   };
 }
 
-function objective(
-  id: string,
-  x: number,
-  y: number,
-  radius: number,
-  label: string,
-  objectiveKind: ObjectiveKind,
-): ControlPoint {
+function objective(id: string, x: number, y: number, radius: number, label: string, objectiveKind: ObjectiveKind): ControlPoint {
   return { id, x, y, radius, owner: "neutral", redProgress: 0, blueProgress: 0, enemyProgress: 0, label, objectiveKind };
 }
 
@@ -124,7 +118,8 @@ export function updateControlPoints(
     zone.enemyProgress = advanceBar(zone.enemyProgress, enemyPressure, redPressure + bluePressure);
 
     const previousOwner = zone.owner;
-    zone.owner = resolveOwner(zone.redProgress, zone.blueProgress, zone.enemyProgress);
+    // Pasamos el dueño anterior para aplicar la lógica de estabilidad
+    zone.owner = resolveOwner(zone.redProgress, zone.blueProgress, zone.enemyProgress, previousOwner);
 
     if (zone.owner !== previousOwner) {
       events.push({
@@ -144,28 +139,41 @@ export function updateControlPoints(
 
 function advanceBar(current: number, pressure: number, opposition: number): number {
   const net = pressure - opposition;
-  if (net > 0) return clamp(current + net, 0, 100);
-  if (net < 0) return clamp(current + net, 0, 100);
+  if (net !== 0) {
+    return clamp(current + net, 0, 100);
+  }
+  // Si no hay presión ni oposición, decae lentamente hacia 0 sin oscilar
   if (current > 0) {
     const decayed = current - ZONE_DECAY_RATE;
-    return decayed < 0.5 ? 0 : decayed;
+    return decayed < 0.1 ? 0 : decayed;
   }
   return current;
 }
 
-function resolveOwner(red: number, blue: number, enemy: number): ZoneOwner {
-  const above = (v: number) => v >= ZONE_CAPTURE_THRESHOLD;
-  if (!above(red) && !above(blue) && !above(enemy)) return "neutral";
-  if (red >= blue && red >= enemy && above(red)) return "red";
-  if (blue >= red && blue >= enemy && above(blue)) return "blue";
-  if (above(enemy)) return "enemies";
-  return "neutral";
+/**
+ * Lógica mejorada para evitar el "shake" o parpadeo de dueño.
+ * Una vez capturada, la zona es más difícil de perder.
+ */
+function resolveOwner(red: number, blue: number, enemy: number, currentOwner: ZoneOwner): ZoneOwner {
+  const CAPTURE = ZONE_CAPTURE_THRESHOLD;
+  const LOSS = ZONE_LOSS_THRESHOLD;
+
+  // Si alguien supera el umbral de captura, toma la zona
+  if (red >= CAPTURE && red >= blue && red >= enemy) return "red";
+  if (blue >= CAPTURE && blue >= red && blue >= enemy) return "blue";
+  if (enemy >= CAPTURE && enemy >= red && enemy >= blue) return "enemies";
+
+  // Si la zona ya tiene dueño, solo la pierde si su barra baja del umbral de PERDIDA (LOSS)
+  // O si otro equipo supera el umbral de CAPTURA (ya manejado arriba)
+  if (currentOwner === "red" && red < LOSS) return "neutral";
+  if (currentOwner === "blue" && blue < LOSS) return "neutral";
+  if (currentOwner === "enemies" && enemy < LOSS) return "neutral";
+
+  // En cualquier otro caso, mantiene el dueño actual (evita el parpadeo)
+  return currentOwner;
 }
 
-export function getZoneBonusForShip(
-  ship: Ship,
-  zones: Record<string, ControlPoint>,
-): ShipZoneBonus {
+export function getZoneBonusForShip(ship: Ship, zones: Record<string, ControlPoint>): ShipZoneBonus {
   for (const zone of Object.values(zones)) {
     const dSq = (ship.x - zone.x) ** 2 + (ship.y - zone.y) ** 2;
     if (dSq <= zone.radius * zone.radius && zone.owner === ship.team) {
@@ -175,11 +183,7 @@ export function getZoneBonusForShip(
   return EMPTY_BONUS;
 }
 
-export function findNearestZone(
-  x: number,
-  y: number,
-  zones: Record<string, ControlPoint>,
-): Pick<ControlPoint, "x" | "y" | "radius"> | null {
+export function findNearestZone(x: number, y: number, zones: Record<string, ControlPoint>): Pick<ControlPoint, "x" | "y" | "radius"> | null {
   let best: ControlPoint | null = null;
   let minSq = Infinity;
   for (const z of Object.values(zones)) {

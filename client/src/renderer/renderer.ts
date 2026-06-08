@@ -83,8 +83,8 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
   ): void {
     const cached = getCachedShip(grid, palette, ps);
     ctx.save();
-    ctx.translate(Math.round(cx), Math.round(cy));
-    ctx.rotate(angle + Math.PI / 2);
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
     ctx.drawImage(cached.canvas, -Math.floor(cached.cx), -Math.floor(cached.cy));
     ctx.restore();
 
@@ -106,9 +106,8 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     const attachments = SHIP_ATTACHMENTS[shipType];
     if (!attachments) return;
 
-    const visualAngle = shipAngle + Math.PI / 2;
-    const cos = Math.cos(visualAngle);
-    const sin = Math.sin(visualAngle);
+    const cos = Math.cos(shipAngle);
+    const sin = Math.sin(shipAngle);
 
     for (const mount of attachments.weapons) {
       const weaponKind = loadout[mount.id];

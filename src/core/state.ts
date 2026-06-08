@@ -15,6 +15,8 @@ export interface PublicShip {
   controller: Controller;
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   angle: number;
   hp: number;
   maxHp: number;
@@ -28,6 +30,11 @@ export interface PublicShip {
   shipClass: ShipClass;
   role?: string;
   mass: number;
+  turnRate: number;
+  drag: number;
+  maxSpeed: number;
+  thrustForce: number;
+  strafeThrustForce: number;
   boostEnergy: number;
   weaponHeat: number;
   empTicks: number;
@@ -58,6 +65,8 @@ export function toPublicShip(s: Ship): PublicShip {
     controller: s.controller,
     x: Math.round(s.x * 10) / 10,
     y: Math.round(s.y * 10) / 10,
+    vx: Math.round(s.vx * 100) / 100,
+    vy: Math.round(s.vy * 100) / 100,
     angle: Math.round(s.angle * 100) / 100,
     hp: Math.round(s.hp),
     maxHp: s.maxHp,
@@ -71,6 +80,11 @@ export function toPublicShip(s: Ship): PublicShip {
     shipClass: s.shipClass,
     role: s.role,
     mass: s.mass,
+    turnRate: s.turnRate,
+    drag: s.drag,
+    maxSpeed: s.maxSpeed,
+    thrustForce: s.thrustForce,
+    strafeThrustForce: s.strafeThrustForce,
     boostEnergy: Math.round(s.boostEnergy),
     weaponHeat: Math.round(s.weaponHeat),
     empTicks: s.empTicks,

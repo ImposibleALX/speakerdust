@@ -15,7 +15,6 @@ const WORKER_WS = IS_LOCAL
 const ROOM_ID = "sala-1";
 let userInteracted = false;
 
-const CAMERA_SMOOTH = 0.15;
 const SHIELD_RADIUS = 28;
 const PLAYER_TAG_OFFSET = 30;
 const INPUT_RATE = 33;
@@ -77,21 +76,33 @@ const adminHealBtn = $("admin-heal-btn")!;
 const adminResetDataBtn = $("admin-reset-data-btn")!;
 const adminPlayerList = $("admin-player-list")!;
 
-let shakeX = 0, shakeY = 0, shakeDuration = 0;
+let shakeStrength = 0;
+let shakeUntil = 0;
+let lastShakeBurstAt = 0;
+
+function addScreenShake(intensity: number, durationMs: number): void {
+    const now = performance.now();
+    if (now - lastShakeBurstAt < 80) return;
+    lastShakeBurstAt = now;
+    shakeStrength = Math.min(2.2, Math.max(shakeStrength, intensity));
+    shakeUntil = Math.max(shakeUntil, now + durationMs);
+}
+
+function getScreenShakeOffset(now: number): { x: number; y: number } {
+    if (now >= shakeUntil) {
+        shakeStrength = 0;
+        return { x: 0, y: 0 };
+    }
+    const t = 1 - Math.max(0, Math.min(1, (shakeUntil - now) / 220));
+    const amp = shakeStrength * (1 - t);
+    const s = Math.sin(now * 0.05);
+    return { x: s * amp * 6, y: Math.cos(now * 0.043) * amp * 6 };
+}
+
 const dmgOverlay = document.createElement("div");
 dmgOverlay.id = "damage-overlay";
 dmgOverlay.style.cssText = "pointer-events:none;position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(transparent 60%, rgba(255,0,0,0.5));opacity:0;transition:opacity 0.1s;z-index:100;";
 document.body.appendChild(dmgOverlay);
-
-let lastShakeTime = 0;
-function addScreenShake(intensity: number, duration: number): void {
-    const now = performance.now();
-    if (now - lastShakeTime < 800) return;
-    lastShakeTime = now;
-    shakeDuration = Math.min(duration, 4);
-    shakeX = Math.min(intensity, 1.5);
-    shakeY = Math.min(intensity, 1.5);
-}
 
 let lastDamageFlash = 0;
 let dmgFlashTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -195,17 +206,19 @@ function triggerHaptic(duration = 50, intensity = 0.5): void {
     }
 }
 
+let viewW = 0, viewH = 0;
+
 function resizeCanvas(): void {
     const hudH = hudEl?.offsetHeight ?? 0;
     const statH = statusBarEl?.offsetHeight ?? 0;
-    const availW = window.innerWidth;
-    const availH = window.innerHeight - hudH - statH;
+    viewW = window.innerWidth;
+    viewH = window.innerHeight - hudH - statH;
     const dpr = window.devicePixelRatio || 1;
 
-    canvas.width = availW * dpr;
-    canvas.height = availH * dpr;
-    canvas.style.width = availW + "px";
-    canvas.style.height = availH + "px";
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(viewH * dpr);
+    canvas.style.width = viewW + "px";
+    canvas.style.height = viewH + "px";
     canvas.style.marginTop = hudH + "px";
     canvas.style.marginLeft = "0px";
     canvas.style.display = "block";
@@ -375,34 +388,32 @@ function buildNebulas(): void {
 }
 
 function drawBackground(): void {
-    const dpr = window.devicePixelRatio || 1;
-    const availW = canvas.width / dpr;
-    const availH = canvas.height / dpr;
-
     ctx.fillStyle = "#02030e";
-    ctx.fillRect(cameraX, cameraY, availW, availH);
+    ctx.fillRect(cameraX, cameraY, viewW, viewH);
 
     ctx.strokeStyle = "rgba(8,15,48,0.5)";
     ctx.lineWidth = 1;
     const startX = Math.floor(cameraX / 48) * 48;
     const startY = Math.floor(cameraY / 48) * 48;
-    const endX = cameraX + availW + 48;
-    const endY = cameraY + availH + 48;
+    const endX = cameraX + viewW + 48;
+    const endY = cameraY + viewH + 48;
     for (let x = startX; x < endX; x += 48) {
-        ctx.beginPath(); ctx.moveTo(x, cameraY); ctx.lineTo(x, endY); ctx.stroke();
+        const sx = Math.round(x - cameraX) + cameraX;
+        ctx.beginPath(); ctx.moveTo(sx, cameraY); ctx.lineTo(sx, endY); ctx.stroke();
     }
     for (let y = startY; y < endY; y += 48) {
-        ctx.beginPath(); ctx.moveTo(cameraX, y); ctx.lineTo(endX, y); ctx.stroke();
+        const sy = Math.round(y - cameraY) + cameraY;
+        ctx.beginPath(); ctx.moveTo(cameraX, sy); ctx.lineTo(endX, sy); ctx.stroke();
     }
 
     const wrapS = 2000;
     for (const s of stars) {
         let px = ((s.x - cameraX * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
         let py = ((s.y - cameraY * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
-        if (px < 0 || px > availW || py < 0 || py > availH) continue;
+        if (px < 0 || px > viewW || py < 0 || py > viewH) continue;
         ctx.globalAlpha = s.alpha * (0.6 + 0.4 * Math.sin(s.tw));
         ctx.fillStyle = "#ffffff";
-        ctx.fillRect(Math.round(cameraX + px), Math.round(cameraY + py), s.size, s.size);
+        ctx.fillRect(Math.round(px) + cameraX, Math.round(py) + cameraY, s.size, s.size);
     }
     ctx.globalAlpha = 1;
 }
@@ -451,10 +462,10 @@ function drawObjectives(zones: Record<string, any>): void {
         ctx.fillStyle = ownerColor;
         ctx.font = "7px 'Press Start 2P', monospace";
         ctx.textAlign = "center";
-        ctx.fillText(zone.label || "ZONA", Math.round(zone.x), Math.round(zone.y - zone.radius - 10));
+        ctx.fillText(zone.label || "ZONA", Math.round(zone.x - cameraX) + cameraX, Math.round(zone.y - zone.radius - 10 - cameraY) + cameraY);
         ctx.font = "6px 'Press Start 2P', monospace";
         const maxProgress = Math.max(zone.redProgress || 0, zone.blueProgress || 0, zone.enemyProgress || 0);
-        ctx.fillText(`${Math.round(maxProgress)}%`, Math.round(zone.x), Math.round(zone.y + zone.radius + 12));
+        ctx.fillText(`${Math.round(maxProgress)}%`, Math.round(zone.x - cameraX) + cameraX, Math.round(zone.y + zone.radius + 12 - cameraY) + cameraY);
         ctx.restore();
     }
 }
@@ -495,7 +506,7 @@ function drawParticles(): void {
         ctx.globalAlpha = p.life / p.maxLife;
         ctx.fillStyle = p.color;
         const s = Math.max(1, Math.ceil(p.sz * (p.life / p.maxLife)));
-        ctx.fillRect(Math.round(p.x), Math.round(p.y), s, s);
+        ctx.fillRect(Math.round(p.x - cameraX) + cameraX, Math.round(p.y - cameraY) + cameraY, s, s);
     }
     ctx.globalAlpha = 1;
 }
@@ -504,19 +515,16 @@ function drawBullets(bullets: Record<string, any>): void {
     for (const id in bullets) {
         const b = bullets[id];
         const margin = 150;
-        const dpr = window.devicePixelRatio || 1;
-        const viewW = canvas.width / dpr;
-        const viewH = canvas.height / dpr;
         if (b.x < cameraX - margin || b.y < cameraY - margin ||
             b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) continue;
 
         const a = b.angle !== undefined ? b.angle : Math.atan2(b.vy, b.vx);
-        const bx = Math.round(b.x);
-        const by = Math.round(b.y);
+        const bx = Math.round(b.x - cameraX) + cameraX;
+        const by = Math.round(b.y - cameraY) + cameraY;
 
         ctx.save();
         ctx.translate(bx, by);
-        ctx.rotate(a + Math.PI / 2);
+        ctx.rotate(a);
 
         const kind = b.kind;
         if (kind === "naval_cannon") {
@@ -525,34 +533,34 @@ function drawBullets(bullets: Record<string, any>): void {
             ctx.globalAlpha = 0.35; ctx.fillStyle = "#ffd36a"; ctx.fillRect(-7, -7, 14, 14);
         } else if (kind === "autocannon") {
             ctx.shadowBlur = 8; ctx.shadowColor = "#a8ff78";
-            ctx.fillStyle = "#ccffaa"; ctx.fillRect(-1, -5, 3, 10);
-            ctx.globalAlpha = 0.35; ctx.fillStyle = "#a8ff78"; ctx.fillRect(-3, -7, 7, 14);
+            ctx.fillStyle = "#ccffaa"; ctx.fillRect(-5, -1, 10, 3);
+            ctx.globalAlpha = 0.35; ctx.fillStyle = "#a8ff78"; ctx.fillRect(-7, -3, 14, 7);
         } else if (kind === "plasma_broadside") {
             ctx.shadowBlur = 10; ctx.shadowColor = "#cc00ff";
             ctx.fillStyle = "#dd66ff"; ctx.fillRect(-3, -3, 6, 6);
             ctx.globalAlpha = 0.4; ctx.fillStyle = "#aa00ff"; ctx.fillRect(-5, -5, 10, 10);
         } else if (kind === "railgun") {
             ctx.shadowBlur = 10; ctx.shadowColor = "#00e5ff";
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-1, -12, 3, 24);
-            ctx.globalAlpha = 0.35; ctx.fillStyle = "#00e5ff"; ctx.fillRect(-3, -15, 7, 30);
+            ctx.fillStyle = "#ffffff"; ctx.fillRect(-12, -1, 24, 3);
+            ctx.globalAlpha = 0.35; ctx.fillStyle = "#00e5ff"; ctx.fillRect(-15, -3, 30, 7);
         } else if (kind === "torpedo") {
             ctx.shadowBlur = 8; ctx.shadowColor = "#ff9030";
-            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-3, 12, 6, 4);
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-2, 12, 4, 2);
-            ctx.fillStyle = "#333333"; ctx.fillRect(-5, 6, 10, 6);
-            ctx.fillStyle = "#aaaaaa"; ctx.fillRect(-4, -6, 8, 12);
-            ctx.fillStyle = "#ff4444"; ctx.fillRect(-3, -12, 6, 6);
-            ctx.fillRect(-2, -14, 4, 2);
+            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-16, -3, 4, 6);
+            ctx.fillStyle = "#ffffff"; ctx.fillRect(-14, -2, 2, 4);
+            ctx.fillStyle = "#333333"; ctx.fillRect(-12, -5, 6, 10);
+            ctx.fillStyle = "#aaaaaa"; ctx.fillRect(-6, -4, 12, 8);
+            ctx.fillStyle = "#ff4444"; ctx.fillRect(6, -3, 6, 6);
+            ctx.fillRect(12, -2, 2, 4);
         } else if (kind === "guided_missile") {
             ctx.shadowBlur = 4; ctx.shadowColor = "#ff6a3d";
-            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-2, 9, 4, 3);
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-1, 9, 2, 1);
-            ctx.fillStyle = "#888888"; ctx.fillRect(-3, 4, 6, 5);
-            ctx.fillStyle = "#cccccc"; ctx.fillRect(-2, -4, 4, 8);
-            ctx.fillStyle = "#555555"; ctx.fillRect(-4, 2, 2, 4);
-            ctx.fillStyle = "#555555"; ctx.fillRect(2, 2, 2, 4);
-            ctx.fillStyle = "#ff4444"; ctx.fillRect(-2, -8, 4, 4);
-            ctx.fillRect(-1, -10, 2, 2);
+            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-12, -2, 3, 4);
+            ctx.fillStyle = "#ffffff"; ctx.fillRect(-10, -1, 1, 2);
+            ctx.fillStyle = "#888888"; ctx.fillRect(-9, -3, 5, 6);
+            ctx.fillStyle = "#cccccc"; ctx.fillRect(-4, -2, 8, 4);
+            ctx.fillStyle = "#555555"; ctx.fillRect(-6, -4, 4, 2);
+            ctx.fillStyle = "#555555"; ctx.fillRect(-6, 2, 4, 2);
+            ctx.fillStyle = "#ff4444"; ctx.fillRect(4, -2, 4, 4);
+            ctx.fillRect(8, -1, 2, 2);
         } else if (kind === "energy_bomb") {
             ctx.shadowBlur = 18; ctx.shadowColor = "#ffe66d";
             ctx.fillStyle = "#ffcc00"; ctx.fillRect(-6, -6, 12, 12);
@@ -625,9 +633,8 @@ function drawShipEngines(
     ctx.save();
     ctx.globalCompositeOperation = "screen";
 
-    const visualAngle = angle + Math.PI / 2;
-    const cos = Math.cos(visualAngle);
-    const sin = Math.sin(visualAngle);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
 
     const dir = reverse ? -1 : 1;
 
@@ -654,7 +661,7 @@ function drawShipEngines(
             ctx.globalAlpha = (1 - t) * 0.7;
             ctx.fillStyle = i < 2 ? "#ffffff" : color;
             const sz = Math.max(1, Math.floor((1 - t) * width * (ps / 2.5)));
-            ctx.fillRect(Math.round(px), Math.round(py), sz, sz);
+            ctx.fillRect(Math.round(px - cameraX) + cameraX, Math.round(py - cameraY) + cameraY, sz, sz);
         }
     }
     ctx.restore();
@@ -680,19 +687,21 @@ function drawEnemies(enemies: Record<string, any>): void {
                 ? PAL_CRUISER_ENEMY
                 : PAL_SCOUT;
 
-        drawShipEngines(e.x, e.y, e.angle, shipType, glowC, ps);
+        const rx = Math.round(e.x - cameraX) + cameraX;
+        const ry = Math.round(e.y - cameraY) + cameraY;
+        drawShipEngines(rx, ry, e.angle, shipType, glowC, ps);
 
         ctx.shadowBlur = isHeavy ? 22 : 14;
         ctx.shadowColor = glowC;
-        drawPixelShip(grid, e.x, e.y, e.angle, pal, ps);
+        drawPixelShip(grid, rx, ry, e.angle, pal, ps);
         ctx.shadowBlur = 0;
 
         const maxHpSafe = e.maxHp > 0 ? e.maxHp : 10;
         const pct = Math.max(0, Math.min(1, e.hp / maxHpSafe));
         const bw = isHeavy ? 44 : isMedium ? 32 : 22;
         const bh = 3;
-        const bx = Math.round(e.x - bw / 2);
-        const by = Math.round(e.y - (isHeavy ? 40 : 30));
+        const bx = Math.round(e.x - bw / 2 - cameraX) + cameraX;
+        const by = Math.round(e.y - (isHeavy ? 40 : 30) - cameraY) + cameraY;
         ctx.fillStyle = "#220000";
         ctx.fillRect(bx, by, bw, bh);
         ctx.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
@@ -706,6 +715,8 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
         if (!p.alive) continue;
         const isMe = id === myId;
         const hsl = parseHSL(p.color ?? "hsl(180,80%,60%)");
+        const prx = Math.round(p.x - cameraX) + cameraX;
+        const pry = Math.round(p.y - cameraY) + cameraY;
 
         let pal = makePlayerPalette(hsl, p.team);
         if (isMe && performance.now() < playerDamageFlashUntil) {
@@ -716,14 +727,14 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
 
         ctx.shadowBlur = isMe ? 22 : 14;
         ctx.shadowColor = teamGlow;
-        drawPixelShip(SHIP_BITMAPS.player!, p.x, p.y, p.angle, pal, isMe ? 3 : 2, "player", DEFAULT_LOADOUTS.player, Math.floor(performance.now() / 50));
+        drawPixelShip(SHIP_BITMAPS.player!, prx, pry, p.angle, pal, isMe ? 3 : 2, "player", DEFAULT_LOADOUTS.player, Math.floor(performance.now() / 50));
         ctx.shadowBlur = 0;
 
         if (isMe) {
             const ps = 3;
             const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
             const reversing = keys["s"] || keys["arrowdown"];
-            drawShipEngines(p.x, p.y, p.angle, "player", trailColor, ps, reversing);
+            drawShipEngines(prx, pry, p.angle, "player", trailColor, ps, reversing);
 
             if ((keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28) {
                 const mx_boost = -Math.cos(p.angle);
@@ -734,7 +745,7 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
                     const ey = p.y + my_boost * (18 + i * 4) + Math.cos(t + 0.7) * 2.5;
                     ctx.globalAlpha = 0.7;
                     ctx.fillStyle = "#00ccff";
-                    ctx.fillRect(Math.round(ex), Math.round(ey), 3, 3);
+                    ctx.fillRect(Math.round(ex - cameraX) + cameraX, Math.round(ey - cameraY) + cameraY, 3, 3);
                 }
                 ctx.globalAlpha = 1;
             }
@@ -744,7 +755,7 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
             ctx.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.arc(Math.round(p.x), Math.round(p.y), 28, 0, Math.PI * 2);
+            ctx.arc(prx, pry, 28, 0, Math.PI * 2);
             ctx.stroke();
         }
 
@@ -782,9 +793,9 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
         ctx.fillStyle = isMe ? "rgba(0,229,255,0.85)"
             : p.team === "red" ? "rgba(255,100,100,0.7)"
                 : p.team === "blue" ? "rgba(100,180,255,0.7)" : "rgba(200,220,255,0.5)";
-        const tagY = Math.round(p.y - (isMe ? 42 : 30));
-        if (p.name) ctx.fillText(p.name.slice(0, 8), Math.round(p.x), tagY - 8);
-        ctx.fillText(`${p.score ?? 0}`, Math.round(p.x), tagY);
+        const tagY = Math.round(p.y - (isMe ? 42 : 30) - cameraY) + cameraY;
+        if (p.name) ctx.fillText(p.name.slice(0, 8), Math.round(p.x - cameraX) + cameraX, tagY - 8);
+        ctx.fillText(`${p.score ?? 0}`, Math.round(p.x - cameraX) + cameraX, tagY);
     }
 }
 
@@ -818,43 +829,43 @@ let serverEnemies: Record<string, any> = {};
 let serverZones: Record<string, any> = {};
 
 let cameraX = 0, cameraY = 0;
+let lastFrameTime = 0;
+let lastTickTime = 0;
 let screenMx = window.innerWidth / 2, screenMy = window.innerHeight / 2;
 
 let renderPlayers: Record<string, any> = {};
 let renderEnemies: Record<string, any> = {};
 let renderBullets: Record<string, any> = {};
 
-function lerp(start: number, end: number, amt: number): number {
-    return (1 - amt) * start + amt * end;
-}
-
 function lerpAngle(a: number, b: number, amt: number): number {
     const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
     return a + delta * amt;
 }
 
-function syncRenderState(renderMap: Record<string, any>, serverMap: Record<string, any>, isAngle = false): void {
+const ENTITY_SMOOTH = 0.2;
+const ANGLE_SMOOTH = 0.4;
+
+function syncRenderState(renderMap: Record<string, any>, serverMap: Record<string, any>, dt: number, isAngle = false): void {
+    const alpha = 1 - Math.pow(1 - ENTITY_SMOOTH, dt);
+    const alphaAngle = 1 - Math.pow(1 - ANGLE_SMOOTH, dt);
+
     for (const id in serverMap) {
         const s = serverMap[id];
 
-        // BORRAMOS EL IF DE 'myId' PARA QUE TU NAVE TAMBIÉN SE INTERPOLE
         if (!renderMap[id]) {
             renderMap[id] = { ...s };
         } else {
             const r = renderMap[id];
 
-            // Interpolación de posición para TODAS las naves
-            r.x = lerp(r.x, s.x, 0.2); // El 0.2 controla la fluidez (ajusta si lo sientes muy "resbaladizo")
-            r.y = lerp(r.y, s.y, 0.2);
+            r.x += (s.x - r.x) * alpha;
+            r.y += (s.y - r.y) * alpha;
 
-            // Interpolación de rotación
             if (isAngle && s.angle !== undefined) {
-                r.angle = lerpAngle(r.angle || 0, s.angle, 0.4);
+                r.angle = lerpAngle(r.angle || 0, s.angle, alphaAngle);
             } else if (s.angle !== undefined) {
                 r.angle = s.angle;
             }
 
-            // Actualización de estados
             r.hp = s.hp; r.maxHp = s.maxHp; r.shield = s.shield; r.score = s.score;
             r.color = s.color; r.shipClass = s.shipClass; r.alive = s.alive;
             r.team = s.team; r.name = s.name;
@@ -862,7 +873,6 @@ function syncRenderState(renderMap: Record<string, any>, serverMap: Record<strin
         }
     }
     for (const id in renderMap) {
-        // Permitimos borrar nuestra propia nave si morimos y el server nos elimina
         if (!serverMap[id]) delete renderMap[id];
     }
 }
@@ -1044,6 +1054,13 @@ function syncPlayerState(me: any): void {
     }
 }
 
+function shouldShakeForExplosion(msg: { x: number; y: number; kind?: string }): boolean {
+    const me = serverPlayers[myId!];
+    if (!me || !me.alive) return false;
+    const radius = msg.kind === "dreadnought" ? 540 : msg.kind === "battleship" ? 380 : 160;
+    return Math.hypot(msg.x - me.x, msg.y - me.y) <= radius;
+}
+
 const msgHandlers: Record<string, (msg: any) => void> = {
     init(msg) {
         myId = msg.playerId;
@@ -1063,6 +1080,7 @@ const msgHandlers: Record<string, (msg: any) => void> = {
         updateHUD();
     },
     tick(msg) {
+        lastTickTime = performance.now();
         serverPlayers = msg.players;
         serverBullets = Object.assign({}, msg.bullets, msg.enemyBullets || {});
         serverEnemies = msg.enemies;
@@ -1112,7 +1130,9 @@ const msgHandlers: Record<string, (msg: any) => void> = {
         if (msg.kind === "battleship" || msg.kind === "dreadnought") {
             explode(msg.x, msg.y, ["#ffcc00", "#ff6600", "#ffffff", "#4466ff"], 40, 7, scale);
             explode(msg.x, msg.y, ["#ff4400", "#ff9900"], 20, 3, 1);
-            addScreenShake(1.5, 4);
+            if (shouldShakeForExplosion(msg)) {
+                addScreenShake(msg.kind === "dreadnought" ? 1.8 : 1.2, msg.kind === "dreadnought" ? 260 : 180);
+            }
             setTimeout(() => { explode(msg.x, msg.y, ["#ff4400", "#ff9900", "#ffff00", "#ffffff"], 60, 5, scale); }, 150);
         } else if (msg.kind === "frigate" || msg.kind === "cruiser") {
             explode(msg.x, msg.y, ["#cc00ff", "#ff80ff", "#ffffff", "#ff9030"], 24, 5, scale);
@@ -1142,6 +1162,7 @@ const msgHandlers: Record<string, (msg: any) => void> = {
         const now = performance.now();
         if (now - lastHitSoundTime > 60) { playImpactSound(msg.reason === "impact"); lastHitSoundTime = now; }
         if (msg.playerId === myId) {
+            addScreenShake(0.55, 140);
             triggerHaptic(40, 0.5);
             myShield = Math.max(0, myShield - 1);
             drawShieldHUD(myShield, myMaxShield);
@@ -1334,15 +1355,34 @@ function gameLoop(now: number): void {
     updateStars();
 
     const dpr = window.devicePixelRatio || 1;
-    const availW = canvas.width / dpr;
-    const availH = canvas.height / dpr;
+    const availW = Math.ceil(viewW);
+    const availH = Math.ceil(viewH);
+    const cameraCenterX = availW / 2;
+    const cameraCenterY = availH / 2;
+
+    const dt = Math.min((now - lastFrameTime) / (1000 / 60), 3);
+    lastFrameTime = now;
+
+    syncRenderState(renderPlayers, serverPlayers, dt, true);
+    syncRenderState(renderEnemies, serverEnemies, dt, true);
+    {
+        const elapsed = (performance.now() - lastTickTime) / 1000;
+        const next: Record<string, any> = {};
+        for (const id in serverBullets) {
+            const b = serverBullets[id];
+            next[id] = {
+                ...b,
+                x: b.x + (b.vx || 0) * elapsed,
+                y: b.y + (b.vy || 0) * elapsed,
+            };
+        }
+        renderBullets = next;
+    }
 
     const me = renderPlayers[myId!];
     if (me && !gameOver) {
-        let targetCamX = me.x - availW / 2;
-        let targetCamY = me.y - availH / 2;
-        cameraX = lerp(cameraX, targetCamX, CAMERA_SMOOTH);
-        cameraY = lerp(cameraY, targetCamY, CAMERA_SMOOTH);
+        cameraX = me.x - cameraCenterX;
+        cameraY = me.y - cameraCenterY;
     } else if (gameOver) {
         let panX = 0, panY = 0;
         if (keys["w"] || keys["arrowup"]) panY -= 1;
@@ -1362,10 +1402,6 @@ function gameLoop(now: number): void {
         lastInputTime = now;
     }
 
-    syncRenderState(renderPlayers, serverPlayers, true);
-    syncRenderState(renderEnemies, serverEnemies, true);
-    renderBullets = serverBullets;
-
     tickParticles();
 
     let dreadnoughtNear = false;
@@ -1376,20 +1412,14 @@ function gameLoop(now: number): void {
     }
     if (dreadnoughtNear && Math.random() < 0.1) playTone(40, 0.1, "sine", 0.02, 35);
 
-    let shakeOffX = 0, shakeOffY = 0;
-    if (shakeDuration > 0) {
-        const sx = (Math.random() - 0.5) * shakeX * (shakeDuration / 12);
-        const sy = (Math.random() - 0.5) * shakeY * (shakeDuration / 12);
-        shakeOffX += sx; shakeOffY += sy;
-        shakeDuration--;
-    }
+    const shake = getScreenShakeOffset(now);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#000000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.scale(dpr, dpr);
-    ctx.translate(-(cameraX + shakeOffX), -(cameraY + shakeOffY));
+    ctx.translate(-cameraX - shake.x, -cameraY - shake.y);
 
     drawBackground();
     drawObjectives(serverZones);

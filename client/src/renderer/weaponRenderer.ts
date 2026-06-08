@@ -78,15 +78,15 @@ function drawPlasmaBolt(ctx: CanvasRenderingContext2D, x: number, y: number, ang
   ctx.rotate(angle);
   ctx.fillStyle = "#d86bff";
   ctx.beginPath();
-  ctx.ellipse(0, 0, 4, len / 2, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, len / 2, 4, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#fdf0ff";
   ctx.beginPath();
-  ctx.ellipse(0, -len * 0.1, 1.2, len * 0.25, 0, 0, Math.PI * 2);
+  ctx.ellipse(len * 0.1, 0, len * 0.25, 1.2, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#f0a0ff";
   ctx.beginPath();
-  ctx.ellipse(0, -len * 0.15, 2, len * 0.3, 0, 0, Math.PI * 2);
+  ctx.ellipse(len * 0.15, 0, len * 0.3, 2, 0, 0, Math.PI * 2);
   ctx.fill();
   drawExtraSpark(ctx, x, y, angle, _tick, pulse);
   ctx.restore();
@@ -98,16 +98,16 @@ function drawRailgunShot(ctx: CanvasRenderingContext2D, x: number, y: number, an
   ctx.translate(x, y);
   ctx.rotate(angle);
   ctx.fillStyle = "#7df9ff";
-  ctx.fillRect(-1.5, -11, 4, 22);
+  ctx.fillRect(-11, -1.5, 22, 4);
   ctx.fillStyle = "#e0ffff";
-  ctx.fillRect(0, -10, 1.5, 20);
+  ctx.fillRect(-10, 0, 20, 1.5);
   ctx.strokeStyle = "#b0ffff";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(-1, -9);
-  ctx.lineTo(-2, -7);
-  ctx.moveTo(2, 9);
-  ctx.lineTo(3, 7);
+  ctx.moveTo(9, -1);
+  ctx.lineTo(7, -2);
+  ctx.moveTo(-9, 2);
+  ctx.lineTo(-7, 3);
   ctx.stroke();
   ctx.restore();
 }
@@ -120,15 +120,15 @@ function drawTorpedo(ctx: CanvasRenderingContext2D, x: number, y: number, angle:
   const wobble = Math.sin(tick * 0.15) * 1.5;
   ctx.fillStyle = "#ff9030";
   ctx.beginPath();
-  ctx.ellipse(wobble, 0, 4, 7, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, wobble, 7, 4, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#ffc070";
   ctx.beginPath();
-  ctx.ellipse(wobble, -4, 2, 3, 0, 0, Math.PI * 2);
+  ctx.ellipse(4, wobble, 3, 2, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#ffe0b0";
   ctx.beginPath();
-  ctx.ellipse(wobble, 7, 1.5, 2, 0, 0, Math.PI * 2);
+  ctx.ellipse(-7, wobble, 2, 1.5, 0, 0, Math.PI * 2);
   ctx.fill();
   drawExtraSpark(ctx, x, y, angle, tick, _pulse);
   ctx.restore();
@@ -142,23 +142,23 @@ function drawMissile(ctx: CanvasRenderingContext2D, x: number, y: number, angle:
   const flame = Math.sin(tick * 0.3) * 2 + 3;
   ctx.fillStyle = "#ff6a3d";
   ctx.beginPath();
-  ctx.moveTo(0, 8);
-  ctx.lineTo(-3, -6);
-  ctx.lineTo(3, -6);
+  ctx.moveTo(-8, 0);
+  ctx.lineTo(6, -3);
+  ctx.lineTo(6, 3);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = "#ffcc00";
   ctx.beginPath();
-  ctx.moveTo(0, -8 - flame);
-  ctx.lineTo(-2, -6);
-  ctx.lineTo(2, -6);
+  ctx.moveTo(8 + flame, 0);
+  ctx.lineTo(6, -2);
+  ctx.lineTo(6, 2);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = "#fff3b0";
   ctx.beginPath();
-  ctx.moveTo(0, -6 - flame * 0.8);
-  ctx.lineTo(-1.2, -6);
-  ctx.lineTo(1.2, -6);
+  ctx.moveTo(6 + flame * 0.8, 0);
+  ctx.lineTo(6, -1.2);
+  ctx.lineTo(6, 1.2);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -243,9 +243,8 @@ function drawStaticWeaponGlow(
 
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(angle + Math.PI / 2);
+    ctx.rotate(angle);
 
-  // 🔴 CORRECCIÓN: Aquí faltaba centrar el dibujo para que el resplandor no esté chueco
   ctx.translate(-cx, -cy);
 
   const gradient = ctx.createRadialGradient(cx, cy, glowRadius * 0.1, cx, cy, glowRadius);
@@ -273,8 +272,8 @@ function drawStaticWeaponBitmap(
 
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(angle + Math.PI / 2);
-  ctx.translate(-w / 2, -h / 2);
+    ctx.rotate(angle);
+    ctx.translate(-w / 2, -h / 2);
 
   for (let r = 0; r < rows; r++) {
     const row = bitmap[r]!;
