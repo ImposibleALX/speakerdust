@@ -1,10 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
-import {
-  GameState,
-} from "../core/state";
-import type { PlayerShip, EnemyShip, Ship, Team } from "../core/ships/shipTypes";
-import type { Bullet, WeaponKind } from "../core/combat/weaponStats";
+import type { GameState } from "../core/state";
+import type { Ship, Team, AiState } from "../core/ships/shipTypes";
+import type { WeaponKind } from "../core/combat/weaponStats";
 import { WEAPON_STATS, HITBOX_PLAYER_BULLET_DEFAULT_SQ, HITBOX_ENEMY_BULLET_SQ, EMP_DURATION_TICKS } from "../core/combat/weaponStats";
 import { AI_STATS, SHIP_HEAT_LIMIT, SHIP_BOOST_COST, collisionRadiusFor } from "../core/ships/shipStats";
 import { TICK_MS, SAVE_EVERY_TICKS } from "../core/world/mapConfig";
@@ -37,13 +35,14 @@ class GameRoom extends DurableObject<Env> {
 
   private readonly persistence: PersistenceQueue;
   private readonly combat: CombatSystem;
+  private readonly aiStates = new Map<string, AiState>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.state.zones = initZones();
 
     this.persistence = new PersistenceQueue(async () => {
-      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state));
+      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state, this.aiStates));
     });
 
     this.combat = new CombatSystem(
@@ -53,27 +52,29 @@ class GameRoom extends DurableObject<Env> {
     );
 
     this.ctx.blockConcurrencyWhile(async () => {
-      // Clear any stale alarm from a previous run so the object starts from a
-      // clean state and does not inherit a broken timer.
-      try {
-        await this.ctx.storage.deleteAlarm();
-      } catch {
-        /* ignore */
-      }
+      try { await this.ctx.storage.deleteAlarm(); } catch { /* ignore */ }
 
       const stored = await this.ctx.storage.get<PersistedState>(SNAPSHOT_KEY);
       const hydrated = stored ? hydrateState(stored) : null;
 
-      if (hydrated) {
+      if (hydrated && stored) {
         this.state = hydrated;
+        this.aiStates.clear();
+        if (stored.aiStates) {
+          for (const [k, v] of Object.entries(stored.aiStates)) {
+            this.aiStates.set(k, v as AiState);
+          }
+        }
       } else {
-        for (const enemy of spawnWave(1)) this.state.ships[enemy.id] = enemy;
+        const results = spawnWave(1);
+        for (const { ship, ai } of results) {
+          this.state.ships[ship.id] = ship;
+          this.aiStates.set(ship.id, ai);
+        }
       }
 
       this.persistence.setHydrated();
       this.persistence.markDirty();
-
-      // Heal or bootstrap the alarm after state is ready.
       await this.reconcileAlarmState();
     });
   }
@@ -84,9 +85,7 @@ class GameRoom extends DurableObject<Env> {
       if (ws.readyState === 1 /* WebSocket.OPEN */) {
         ws.send(JSON.stringify(payload));
       }
-    } catch {
-      /* socket cerrado */
-    }
+    } catch { /* socket cerrado */ }
   }
 
   private safeBroadcast(payload: object): void {
@@ -100,7 +99,7 @@ class GameRoom extends DurableObject<Env> {
   }
 
   private hasActiveGame(): boolean {
-    return this.getPlayerShips().length > 0 || this.getEnemyShips().length > 0;
+    return Object.values(this.state.ships).some(s => s.alive);
   }
 
   private async reconcileAlarmState(): Promise<void> {
@@ -118,7 +117,6 @@ class GameRoom extends DurableObject<Env> {
       const now = Date.now();
       const staleThresholdMs = Math.max(120_000, TICK_MS * 20);
 
-      // If the stored alarm is missing or clearly stale, reset it.
       if (currentAlarm === null || currentAlarm < now - staleThresholdMs) {
         await this.ctx.storage.deleteAlarm();
         await this.ctx.storage.setAlarm(now + TICK_MS);
@@ -134,7 +132,6 @@ class GameRoom extends DurableObject<Env> {
         await this.ctx.storage.deleteAlarm();
         return;
       }
-
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
     } catch (err) {
@@ -146,24 +143,14 @@ class GameRoom extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.ctx.storage.sync();
 
-    const players = this.getPlayerShips();
-    const enemies = this.getEnemyShips();
-
-    if (players.length === 0 && enemies.length === 0) {
-      try {
-        await this.ctx.storage.deleteAlarm();
-      } catch {
-        /* ignore */
-      }
-      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state));
+    const alive = Object.values(this.state.ships).filter(s => s.alive);
+    if (alive.length === 0) {
+      try { await this.ctx.storage.deleteAlarm(); } catch { /* ignore */ }
+      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state, this.aiStates));
       return;
     }
 
-    try {
-      this.gameTick();
-    } catch (err) {
-      console.error("gameTick error:", err);
-    }
+    try { this.gameTick(); } catch (err) { console.error("gameTick error:", err); }
 
     await this.ensureNextTickAlarm();
   }
@@ -192,14 +179,10 @@ class GameRoom extends DurableObject<Env> {
     }
 
     const { valid } = validateToken(token, this.env.AUTH_SECRET);
-    if (!valid) {
-      return new Response("Invalid auth token", { status: 401 });
-    }
+    if (!valid) return new Response("Invalid auth token", { status: 401 });
 
     const clientIP = this.getClientIP(request);
-    if (!checkConnectionRate(clientIP)) {
-      return new Response("Rate limited", { status: 429 });
-    }
+    if (!checkConnectionRate(clientIP)) return new Response("Rate limited", { status: 429 });
 
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
@@ -207,7 +190,7 @@ class GameRoom extends DurableObject<Env> {
     const playerId = uuid();
     server.serializeAttachment({ playerId });
 
-    const playerShips = this.getPlayerShips();
+    const playerShips = Object.values(this.state.ships).filter(s => s.controller === "player");
     const redCount = playerShips.filter(p => p.team === "red").length;
     const blueCount = playerShips.filter(p => p.team === "blue").length;
     const team: Team = redCount <= blueCount ? "red" : "blue";
@@ -234,13 +217,12 @@ class GameRoom extends DurableObject<Env> {
 
     const ship = this.state.ships[attachment.playerId];
     if (!ship || ship.controller !== "player") return;
-    const player = ship as PlayerShip;
 
     const msg = validateMessage(raw);
     if (!msg) return;
 
     if (msg.type.startsWith("admin_")) {
-      this.processAdminMessage(ws, player, msg);
+      this.processAdminMessage(ws, ship, msg);
       return;
     }
 
@@ -248,49 +230,48 @@ class GameRoom extends DurableObject<Env> {
       case "set_team": {
         const t = msg.team as Team;
         if (t === "red" || t === "blue" || t === "spectator") {
-          player.team = t;
-          this.safeBroadcast({ type: "player_team", playerId: player.id, team: t });
+          ship.team = t;
+          this.safeBroadcast({ type: "player_team", playerId: ship.id, team: t });
         }
         break;
       }
       case "respawn": {
-        if (!player.alive || player.team === "spectator") {
-          if (player.team === "spectator") {
-            const ships = this.getPlayerShips();
+        if (!ship.alive || ship.team === "spectator") {
+          if (ship.team === "spectator") {
+            const ships = Object.values(this.state.ships).filter(s => s.controller === "player");
             const red = ships.filter(p => p.team === "red").length;
             const blue = ships.filter(p => p.team === "blue").length;
-            player.team = red <= blue ? "red" : "blue";
-            this.safeBroadcast({ type: "player_team", playerId: player.id, team: player.team });
+            ship.team = red <= blue ? "red" : "blue";
+            this.safeBroadcast({ type: "player_team", playerId: ship.id, team: ship.team });
           }
-          respawnPlayer(player);
+          respawnPlayer(ship);
           this.persistence.markDirty();
           this.safeSend(ws, { type: "respawned" });
-
           void this.reconcileAlarmState();
         }
         break;
       }
       case "boost": {
-        if (!player.alive || !checkBoostRate(ws)) return;
-        if (player.boostCooldown <= 0 && player.boostEnergy >= SHIP_BOOST_COST) {
-          player.boostQueued = true;
+        if (!ship.alive || !checkBoostRate(ws)) return;
+        if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) {
+          ship.boostQueued = true;
         }
         break;
       }
       case "move": {
-        if (!player.alive || !checkMoveRate(ws)) return;
-        this.processPlayerMovement(player, msg);
+        if (!ship.alive || !checkMoveRate(ws)) return;
+        this.processPlayerMovement(ship, msg);
         break;
       }
       case "switch_weapon": {
-        if (!player.alive) return;
-        const weapon = cycleWeapon(player);
+        if (!ship.alive) return;
+        const weapon = cycleWeapon(ship);
         this.safeSend(ws, { type: "weapon_changed", weapon });
         break;
       }
       case "shoot": {
-        if (!player.alive || !checkShootRate(ws)) return;
-        this.combat.tryFireWeapon(player);
+        if (!ship.alive || !checkShootRate(ws)) return;
+        this.combat.tryFireWeapon(ship);
         break;
       }
     }
@@ -302,10 +283,10 @@ class GameRoom extends DurableObject<Env> {
 
     if (playerId && this.state.ships[playerId]) {
       delete this.state.ships[playerId];
+      this.aiStates.delete(playerId);
       this.safeBroadcast({ type: "player_leave", playerId });
       this.combat.discardPendingShotsFor(playerId);
       this.persistence.markDirty();
-
       void this.reconcileAlarmState();
     }
   }
@@ -315,10 +296,9 @@ class GameRoom extends DurableObject<Env> {
     const st = this.state;
     st.tick++;
 
-    const playerShips = this.getPlayerShips();
-    const enemyShips = this.getEnemyShips();
-    const alivePlayers = playerShips.filter(p => p.alive);
-    const aliveEnemies = enemyShips.filter(e => e.alive);
+    const allShips = Object.values(st.ships);
+    const alivePlayers = allShips.filter(s => s.controller === "player" && s.alive);
+    const aliveEnemies = allShips.filter(s => s.controller === "ai" && s.alive);
 
     // Zone Control Logic
     const zoneEvents = updateControlPoints(st.zones, alivePlayers, aliveEnemies, st.wave);
@@ -342,12 +322,15 @@ class GameRoom extends DurableObject<Env> {
     // AI Logic & Physics
     const enemyCounts = computeEnemyCounts(aliveEnemies);
     for (const enemy of aliveEnemies) {
+      const ai = this.aiStates.get(enemy.id);
+      if (!ai) continue;
+
       const nearestZone = findNearestZone(enemy.x, enemy.y, st.zones);
-      updateEnemyInputs(enemy, alivePlayers, enemyCounts, nearestZone);
+      updateEnemyInputs(enemy, ai, alivePlayers, enemyCounts, nearestZone);
       updateShipPhysics(enemy, 0);
 
       if (alivePlayers.length > 0) {
-        let closestPlayer: PlayerShip | null = null;
+        let closestPlayer: Ship | null = null;
         let closestDSq = Infinity;
         for (const p of alivePlayers) {
           const dSq = distSq(enemy, p);
@@ -359,7 +342,7 @@ class GameRoom extends DurableObject<Env> {
         if (closestPlayer) {
           const angToTarget = Math.atan2(closestPlayer.y - enemy.y, closestPlayer.x - enemy.x);
           const aimError = shortestAngleDelta(enemy.angle, angToTarget);
-          if (shouldEnemyFire(enemy, closestDSq, aimError)) {
+          if (shouldEnemyFire(enemy, ai, closestDSq, aimError)) {
             this.combat.fireEnemyWeapon(enemy, closestPlayer);
           }
         }
@@ -367,18 +350,18 @@ class GameRoom extends DurableObject<Env> {
     }
 
     // Combat Resolution
+    const aliveShips = [...alivePlayers, ...aliveEnemies];
     this.combat.resolvePendingShots();
-    this.combat.updateBullets(alivePlayers, aliveEnemies);
-    this.combat.resolveCollisions(alivePlayers, aliveEnemies);
+    this.combat.updateBullets(aliveShips);
+    this.combat.resolveCollisions(aliveShips);
     this.combat.resolveWaveCompletion(alivePlayers);
 
     if (st.tick % SAVE_EVERY_TICKS === 0) this.persistence.markDirty();
     this.safeBroadcast(buildTickPayload(st));
   }
 
-  // Utility
-
-  private processPlayerMovement(player: PlayerShip, msg: any): void {
+  // ── Utilities ─────────────────────────────────────────────────────────────
+  private processPlayerMovement(player: Ship, msg: any): void {
     if (typeof msg.seq === "number") player.inputSeq = msg.seq;
 
     const hasLocal = typeof msg.forward === "number" || typeof msg.strafe === "number";
@@ -408,7 +391,7 @@ class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private processAdminMessage(ws: WebSocket, player: PlayerShip, msg: any): void {
+  private processAdminMessage(ws: WebSocket, player: Ship, msg: any): void {
     const effect = handleAdmin(msg, player, this.state, this.env);
     switch (effect.kind) {
       case "authed":
@@ -416,17 +399,16 @@ class GameRoom extends DurableObject<Env> {
         break;
       case "reset_all":
         this.safeBroadcast({ type: "admin_event", action: "reset_all" });
+        this.aiStates.clear();
         this.persistence.markDirty();
         void this.reconcileAlarmState();
         break;
       case "kick": {
         const targetWs = this.ctx.getWebSockets().find(sock => {
-          const attachment = sock.deserializeAttachment() as { playerId?: string } | null;
-          return attachment?.playerId === effect.playerId;
+          const a = sock.deserializeAttachment() as { playerId?: string } | null;
+          return a?.playerId === effect.playerId;
         });
-        if (targetWs) {
-          try { targetWs.close(1000, "Kicked by admin"); } catch { }
-        }
+        if (targetWs) { try { targetWs.close(1000, "Kicked by admin"); } catch { } }
         this.safeBroadcast({ type: "player_leave", playerId: effect.playerId });
         this.persistence.markDirty();
         void this.reconcileAlarmState();
@@ -434,11 +416,17 @@ class GameRoom extends DurableObject<Env> {
       }
       case "set_wave":
         this.safeBroadcast({ type: "new_wave", wave: effect.wave });
+        for (const { ship, ai } of effect.spawns) {
+          this.aiStates.set(ship.id, ai);
+        }
         this.persistence.markDirty();
         void this.reconcileAlarmState();
         break;
       case "clear_enemies":
         this.safeBroadcast({ type: "admin_event", action: "clear_enemies" });
+        for (const [id] of this.aiStates) {
+          if (!this.state.ships[id]) this.aiStates.delete(id);
+        }
         this.persistence.markDirty();
         void this.reconcileAlarmState();
         break;
@@ -454,15 +442,7 @@ class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private getPlayerShips(): PlayerShip[] {
-    return Object.values(this.state.ships).filter((s): s is PlayerShip => s.controller === "player");
-  }
-
-  private getEnemyShips(): EnemyShip[] {
-    return Object.values(this.state.ships).filter((s): s is EnemyShip => s.controller === "ai");
-  }
-
-  private getEnemyScore(enemy: EnemyShip): number {
-    return AI_STATS[enemy.kind]?.score ?? 0;
+  private getEnemyScore(ship: Ship): number {
+    return AI_STATS[ship.shipClass]?.score ?? 0;
   }
 }

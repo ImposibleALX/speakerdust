@@ -655,10 +655,10 @@ function drawEnemies(enemies: Record<string, any>): void {
     for (const id in enemies) {
         const e = enemies[id];
         const ps = 3;
-        const kind = e.kind || "corvette";
+        const shipClass = e.shipClass || "corvette";
 
-        const isHeavy = kind === "battleship" || kind === "dreadnought";
-        const isMedium = kind === "destroyer" || kind === "frigate" || kind === "cruiser";
+        const isHeavy = shipClass === "battleship" || shipClass === "dreadnought";
+        const isMedium = shipClass === "destroyer" || shipClass === "missile_frigate" || shipClass === "cruiser";
 
         const glowC = isHeavy ? "#4466ff" : isMedium ? "#cc00ff" : "#ff2060";
 
@@ -829,29 +829,33 @@ function lerpAngle(a: number, b: number, amt: number): number {
 function syncRenderState(renderMap: Record<string, any>, serverMap: Record<string, any>, isAngle = false): void {
     for (const id in serverMap) {
         const s = serverMap[id];
-        if (id === myId) {
-            renderMap[id] = { ...s };
-            continue;
-        }
+
+        // BORRAMOS EL IF DE 'myId' PARA QUE TU NAVE TAMBIÉN SE INTERPOLE
         if (!renderMap[id]) {
             renderMap[id] = { ...s };
         } else {
             const r = renderMap[id];
-            r.x = lerp(r.x, s.x, 0.2);
+
+            // Interpolación de posición para TODAS las naves
+            r.x = lerp(r.x, s.x, 0.2); // El 0.2 controla la fluidez (ajusta si lo sientes muy "resbaladizo")
             r.y = lerp(r.y, s.y, 0.2);
+
+            // Interpolación de rotación
             if (isAngle && s.angle !== undefined) {
                 r.angle = lerpAngle(r.angle || 0, s.angle, 0.4);
             } else if (s.angle !== undefined) {
                 r.angle = s.angle;
             }
+
+            // Actualización de estados
             r.hp = s.hp; r.maxHp = s.maxHp; r.shield = s.shield; r.score = s.score;
-            r.color = s.color; r.kind = s.kind; r.alive = s.alive;
+            r.color = s.color; r.shipClass = s.shipClass; r.alive = s.alive;
             r.team = s.team; r.name = s.name;
             r.vx = s.vx; r.vy = s.vy; r.radius = s.radius;
         }
     }
     for (const id in renderMap) {
-        if (id === myId) continue;
+        // Permitimos borrar nuestra propia nave si morimos y el server nos elimina
         if (!serverMap[id]) delete renderMap[id];
     }
 }
@@ -1359,7 +1363,7 @@ function gameLoop(now: number): void {
 
     let dreadnoughtNear = false;
     for (const e of Object.values(renderEnemies)) {
-        if (e.kind === "dreadnought" && me && Math.hypot(e.x - me.x, e.y - me.y) < 150) {
+        if (e.shipClass === "dreadnought" && me && Math.hypot(e.x - me.x, e.y - me.y) < 150) {
             dreadnoughtNear = true; break;
         }
     }

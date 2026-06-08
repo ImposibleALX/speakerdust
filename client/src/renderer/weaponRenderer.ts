@@ -22,7 +22,6 @@ export function registerWeaponRenderer(
 
 // ─── Mejoras visuales ────────────────────────────────────
 
-/** Dibuja un resplandor sutil detrás de cualquier arma */
 function drawGlow(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -44,7 +43,6 @@ function drawGlow(
   ctx.restore();
 }
 
-/** Añade un segundo arco eléctrico o destello según el tipo */
 function drawExtraSpark(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -72,68 +70,37 @@ function drawExtraSpark(
 
 // ─── Funciones dinámicas mejoradas ──────────────────────
 
-function drawPlasmaBolt(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  angle: number,
-  _tick: number,
-  pulse: number
-): void {
+function drawPlasmaBolt(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, _tick: number, pulse: number): void {
   const len = 14 + pulse * 4;
   drawGlow(ctx, x, y, len * 0.6, "#d86bff", 0.35);
-
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
-
-  // Núcleo principal
   ctx.fillStyle = "#d86bff";
   ctx.beginPath();
   ctx.ellipse(0, 0, 4, len / 2, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Brillo central blanquecino
   ctx.fillStyle = "#fdf0ff";
   ctx.beginPath();
   ctx.ellipse(0, -len * 0.1, 1.2, len * 0.25, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Aura exterior
   ctx.fillStyle = "#f0a0ff";
   ctx.beginPath();
   ctx.ellipse(0, -len * 0.15, 2, len * 0.3, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Destello lateral
   drawExtraSpark(ctx, x, y, angle, _tick, pulse);
-
   ctx.restore();
 }
 
-function drawRailgunShot(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  angle: number,
-  _tick: number,
-  _pulse: number
-): void {
+function drawRailgunShot(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, _tick: number, _pulse: number): void {
   drawGlow(ctx, x, y, 8, "#7df9ff", 0.4);
-
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
-
-  // Rastro principal
   ctx.fillStyle = "#7df9ff";
   ctx.fillRect(-1.5, -11, 4, 22);
-
-  // Núcleo brillante
   ctx.fillStyle = "#e0ffff";
   ctx.fillRect(0, -10, 1.5, 20);
-
-  // Chispas lineales
   ctx.strokeStyle = "#b0ffff";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -142,65 +109,37 @@ function drawRailgunShot(
   ctx.moveTo(2, 9);
   ctx.lineTo(3, 7);
   ctx.stroke();
-
   ctx.restore();
 }
 
-function drawTorpedo(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  angle: number,
-  tick: number,
-  _pulse: number
-): void {
+function drawTorpedo(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, tick: number, _pulse: number): void {
   drawGlow(ctx, x, y, 7, "#ff9030", 0.25);
-
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
   const wobble = Math.sin(tick * 0.15) * 1.5;
-
-  // Cuerpo
   ctx.fillStyle = "#ff9030";
   ctx.beginPath();
   ctx.ellipse(wobble, 0, 4, 7, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Remaches o líneas
   ctx.fillStyle = "#ffc070";
   ctx.beginPath();
   ctx.ellipse(wobble, -4, 2, 3, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Estela trasera
   ctx.fillStyle = "#ffe0b0";
   ctx.beginPath();
   ctx.ellipse(wobble, 7, 1.5, 2, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Destello en la estela
   drawExtraSpark(ctx, x, y, angle, tick, _pulse);
-
   ctx.restore();
 }
 
-function drawMissile(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  angle: number,
-  tick: number,
-  _pulse: number
-): void {
+function drawMissile(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, tick: number, _pulse: number): void {
   drawGlow(ctx, x, y, 9, "#ff6a3d", 0.3);
-
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
   const flame = Math.sin(tick * 0.3) * 2 + 3;
-
-  // Cuerpo
   ctx.fillStyle = "#ff6a3d";
   ctx.beginPath();
   ctx.moveTo(0, 8);
@@ -208,8 +147,6 @@ function drawMissile(
   ctx.lineTo(3, -6);
   ctx.closePath();
   ctx.fill();
-
-  // Llama dinámica
   ctx.fillStyle = "#ffcc00";
   ctx.beginPath();
   ctx.moveTo(0, -8 - flame);
@@ -217,8 +154,6 @@ function drawMissile(
   ctx.lineTo(2, -6);
   ctx.closePath();
   ctx.fill();
-
-  // Punta de la llama (más clara)
   ctx.fillStyle = "#fff3b0";
   ctx.beginPath();
   ctx.moveTo(0, -6 - flame * 0.8);
@@ -226,65 +161,38 @@ function drawMissile(
   ctx.lineTo(1.2, -6);
   ctx.closePath();
   ctx.fill();
-
   ctx.restore();
 }
 
-function drawEnergyBomb(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  _angle: number,
-  tick: number,
-  pulse: number
-): void {
+function drawEnergyBomb(ctx: CanvasRenderingContext2D, x: number, y: number, _angle: number, tick: number, pulse: number): void {
   const radius = 6 + pulse * 3;
   const glow = Math.sin(tick * 0.08) * 0.3 + 0.7;
-
-  // Brillo extenso
   ctx.save();
   ctx.translate(x, y);
   ctx.fillStyle = `rgba(255, 230, 109, ${glow * 0.25})`;
   ctx.beginPath();
   ctx.arc(0, 0, radius * 2, 0, Math.PI * 2);
   ctx.fill();
-
-  // Anillo exterior
   ctx.strokeStyle = `rgba(255, 230, 109, ${glow * 0.6})`;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.arc(0, 0, radius * 1.2, 0, Math.PI * 2);
   ctx.stroke();
-
-  // Núcleo
   ctx.fillStyle = "#ffe66d";
   ctx.beginPath();
   ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fill();
-
-  // Centro blanco
   ctx.fillStyle = "#fff8c0";
   ctx.beginPath();
   ctx.arc(0, 0, radius * 0.4, 0, Math.PI * 2);
   ctx.fill();
-
   ctx.restore();
 }
 
-function drawEmpPulse(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  _angle: number,
-  tick: number,
-  _pulse: number
-): void {
+function drawEmpPulse(ctx: CanvasRenderingContext2D, x: number, y: number, _angle: number, tick: number, _pulse: number): void {
   const ringAlpha = Math.sin(tick * 0.1) * 0.3 + 0.7;
-
   ctx.save();
   ctx.translate(x, y);
-
-  // Ondas de pulso
   for (let i = 1; i <= 2; i++) {
     const radius = 6 + i * 4 + Math.sin(tick * 0.15 + i) * 2;
     ctx.strokeStyle = `rgba(102, 204, 255, ${ringAlpha * (1 - i * 0.3)})`;
@@ -293,23 +201,16 @@ function drawEmpPulse(
     ctx.arc(0, 0, radius, 0, Math.PI * 2);
     ctx.stroke();
   }
-
-  // Círculo central
   ctx.fillStyle = "#66ccff";
   ctx.beginPath();
   ctx.arc(0, 0, 4, 0, Math.PI * 2);
   ctx.fill();
-
-  // Punto brillante
   ctx.fillStyle = "#e0f7ff";
   ctx.beginPath();
   ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
   ctx.fill();
-
   ctx.restore();
 }
-
-// ─── Registro (idéntico) ─────────────────────────────────
 
 export function initWeaponRenderers(): void {
   registerWeaponRenderer("plasma_bolt", drawPlasmaBolt);
@@ -320,12 +221,8 @@ export function initWeaponRenderers(): void {
   registerWeaponRenderer("emp_pulse", drawEmpPulse);
 }
 
-// ─── Renderizado de armas estáticas mejorado ─────────────
+// ─── Renderizado de armas estáticas corregido ─────────────
 
-/**
- * Aplica un resplandor suave al bitmap estático para que
- * combine visualmente con las armas dinámicas.
- */
 function drawStaticWeaponGlow(
   ctx: CanvasRenderingContext2D,
   bitmap: number[][],
@@ -339,20 +236,18 @@ function drawStaticWeaponGlow(
   const w = cols * ps;
   const h = rows * ps;
 
-  // Encontrar el centro de masa o usar el centro geométrico
   const cx = w / 2;
   const cy = h / 2;
-
-  // Determinar un radio aproximado para el resplandor
   const maxDim = Math.max(w, h);
   const glowRadius = maxDim * 0.8;
 
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle + Math.PI / 2);
-  // Ahora el sistema de coordenadas está alineado con el bitmap
 
-  // Dibujar un resplandor difuso detrás del bitmap
+  // 🔴 CORRECCIÓN: Aquí faltaba centrar el dibujo para que el resplandor no esté chueco
+  ctx.translate(-cx, -cy);
+
   const gradient = ctx.createRadialGradient(cx, cy, glowRadius * 0.1, cx, cy, glowRadius);
   gradient.addColorStop(0, "rgba(180,220,255,0.3)");
   gradient.addColorStop(1, "transparent");
@@ -368,7 +263,6 @@ function drawStaticWeaponBitmap(
   y: number,
   angle: number
 ): void {
-  // Primero el resplandor de fondo
   drawStaticWeaponGlow(ctx, bitmap, x, y, angle);
 
   const ps = 2;
@@ -401,8 +295,6 @@ const WEAPON_PALETTE: Record<number, string> = {
   4: "#ffaa00",
   5: "#88ccff",
 };
-
-// ─── Punto de entrada inmutable ──────────────────────────
 
 export function drawWeaponOnMount(
   ctx: CanvasRenderingContext2D,

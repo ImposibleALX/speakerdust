@@ -8,7 +8,7 @@ import {
   toPublicShip, toPublicZone,
 } from "../../core/state";
 import type { Projectile } from "../../core/combat/projectiles";
-import type { PlayerShip, EnemyShip, Ship } from "../../core/ships/shipTypes";
+import type { Ship } from "../../core/ships/shipTypes";
 import { TICK_MS } from "../../core/world/mapConfig";
 
 export { validateMessage } from "./validator";
@@ -29,7 +29,7 @@ export function buildInitPayload(
   return {
     type: "init",
     playerId,
-    team: (state.ships[playerId] as PlayerShip | undefined)?.team,
+    team: state.ships[playerId]?.team,
     worldW: 1200,
     worldH: 800,
     wave: state.wave,

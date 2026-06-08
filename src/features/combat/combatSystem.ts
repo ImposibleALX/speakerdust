@@ -3,13 +3,12 @@ import type { WeaponKind } from "../../core/combat/weaponStats";
 import { EMP_DURATION_TICKS, WEAPON_STATS } from "../../core/combat/weaponStats";
 import { createProjectile, type Projectile } from "../../core/combat/projectiles";
 import { isAngleInArc } from "../../core/combat/patterns";
-import type { EnemyShip, PlayerShip, Ship } from "../../core/ships/shipTypes";
+import type { Ship, ShipClass, AiState } from "../../core/ships/shipTypes";
 import { AI_STATS, SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
 import { distSq } from "../../core/math";
 import { applyShipDamage, applyWeaponRecoil, resolveShipCollision } from "../physics/playerSystem";
 import { applyBulletSplash, generateEnemyBullets, spawnWave } from "../ai/enemySystem";
 
-// 12. Tipado mejorado para incluir ownerController
 interface PendingShot {
   ownerId: string;
   ownerController: "player" | "ai";
@@ -19,7 +18,6 @@ interface PendingShot {
   fireTick: number;
 }
 
-// 13. Anti-patrón resuelto con unión discriminada para los eventos emitidos
 export type GameEvent =
   | { type: "weapon_charge"; ownerId: string; weapon: WeaponKind; x: number; y: number; angle: number; ticks: number; color: string }
   | { type: "shockwave"; x: number; y: number; weapon: WeaponKind; ownerId: string }
@@ -34,9 +32,8 @@ export type GameEvent =
 type Broadcast = (payload: GameEvent) => void;
 
 export class CombatSystem {
-  // 9. Constantes claras para distancias en lugar de números mágicos
-  private static readonly GUIDED_MISSILE_MAX_DIST_SQ = 577600; // 760^2
-  private static readonly TORPEDO_MAX_DIST_SQ = 384400;      // 620^2
+  private static readonly GUIDED_MISSILE_MAX_DIST_SQ = 577600;
+  private static readonly TORPEDO_MAX_DIST_SQ = 384400;
 
   private pendingShots: PendingShot[] = [];
 
@@ -50,45 +47,40 @@ export class CombatSystem {
     this.pendingShots = this.pendingShots.filter(s => s.ownerId !== ownerId);
   }
 
-  tryFireWeapon(player: PlayerShip): void {
-    if (player.shootCooldown > 0 || player.weaponHeat >= SHIP_HEAT_LIMIT || player.empTicks > 0) return;
+  tryFireWeapon(ship: Ship): void {
+    if (ship.shootCooldown > 0 || ship.weaponHeat >= SHIP_HEAT_LIMIT || ship.empTicks > 0) return;
 
-    const weapon = player.weapon;
+    const weapon = ship.weapon;
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
-    const targetId = this.findTargetId(player, weapon);
+    const targetId = this.findTargetId(ship, weapon);
     const state = this.getState();
     const target = targetId ? state.ships[targetId] : undefined;
-    if (target && !isAngleInArc(player.angle, Math.atan2(target.y - player.y, target.x - player.x), stats.arc)) {
-      // Preserve existing behavior
+    if (target && !isAngleInArc(ship.angle, Math.atan2(target.y - ship.y, target.x - ship.x), stats.arc)) {
     }
 
-    player.shootCooldown = stats.cooldown;
-    player.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, player.weaponHeat + stats.heat);
-    applyWeaponRecoil(player, player.angle, stats.recoil);
+    ship.shootCooldown = stats.cooldown;
+    ship.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, ship.weaponHeat + stats.heat);
+    applyWeaponRecoil(ship, ship.angle, stats.recoil);
 
     if (stats.chargeTicks > 0) {
-      this.queueShot(player.id, "player", weapon, player.angle, stats.chargeTicks, targetId);
+      this.queueShot(ship.id, ship.controller, weapon, ship.angle, stats.chargeTicks, targetId);
     } else {
-      this.spawnWeaponBullets(player.id, "player", player.x, player.y, player.angle, weapon, targetId);
+      this.spawnWeaponBullets(ship.id, ship.controller, ship.x, ship.y, ship.angle, weapon, targetId);
     }
     this.markDirty();
   }
 
-  fireEnemyWeapon(enemy: EnemyShip, target: PlayerShip): void {
-    // Fallback seguro: si no existe preferredWeapon, usamos naval_cannon (siempre definido)
-    const weapon = AI_STATS[enemy.kind]?.preferredWeapon ?? "naval_cannon";
+  fireEnemyWeapon(enemy: Ship, target: Ship): void {
+    const weapon = enemy.weapon;
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
     const angle = Math.atan2(target.y + target.vy * 20 - enemy.y, target.x + target.vx * 20 - enemy.x);
 
-    // Aplicamos el cooldown siempre, cargada o no
-    const cooldownTicks = Math.round(stats.cooldown * (AI_STATS[enemy.kind]?.shootRateMul ?? 1));
-    enemy.shootCooldown = cooldownTicks;
-    enemy.weaponHeat = Math.min(130, enemy.weaponHeat + stats.heat);
-    enemy.weapon = weapon;
+    enemy.shootCooldown = stats.cooldown;
+    enemy.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, enemy.weaponHeat + stats.heat);
 
     if (stats.chargeTicks > 0) {
       this.queueShot(enemy.id, "ai", weapon, angle, stats.chargeTicks, target.id);
@@ -111,11 +103,10 @@ export class CombatSystem {
     }
   }
 
-  updateBullets(alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
+  updateBullets(aliveShips: Ship[]): void {
     const state = this.getState();
     const allAlive: Record<string, Ship> = {};
-    for (const p of alivePlayers) allAlive[p.id] = p;
-    for (const e of aliveEnemies) allAlive[e.id] = e;
+    for (const s of aliveShips) allAlive[s.id] = s;
 
     for (const [pid, projectile] of Object.entries(state.projectiles)) {
       if (!projectile.alive) { delete state.projectiles[pid]; continue; }
@@ -147,7 +138,7 @@ export class CombatSystem {
 
     const result = applyShipDamage(target, hit.damage, false, hit.armorPierce);
 
-    const owner = state.ships[projectile.ownerId] as PlayerShip | undefined;
+    const owner = state.ships[projectile.ownerId] as Ship | undefined;
 
     if (target.controller === "ai") {
       this.applySplashToEnemies(hit, state, target.id, owner);
@@ -159,16 +150,16 @@ export class CombatSystem {
     if (result.dead) {
       delete state.ships[target.id];
       if (owner) {
-        owner.score += target.controller === "ai" ? AI_STATS[(target as EnemyShip).kind]?.score ?? 0 : 100;
+        owner.score += target.controller === "ai" ? AI_STATS[target.shipClass]?.score ?? 0 : 100;
       }
       if (target.controller === "player") {
         this.broadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });
       } else {
-        this.broadcast({ type: "explosion", x: target.x, y: target.y, kind: (target as EnemyShip).kind, shipClass: target.shipClass });
+        this.broadcast({ type: "explosion", x: target.x, y: target.y, kind: target.shipClass, shipClass: target.shipClass });
       }
       this.markDirty();
     } else {
-      if (result.shieldHit && target.controller === "player") {
+      if (result.shieldHit) {
         this.broadcast({ type: "shield_hit", playerId: target.id, reason: "weapon" });
       } else {
         this.broadcast({ type: "hit", x: target.x, y: target.y, weapon: hit.kind });
@@ -176,19 +167,19 @@ export class CombatSystem {
     }
   }
 
-  private applySplashToEnemies(hit: { splashRadius: number; splashDamage: number; x: number; y: number; ownerId: string }, state: GameState, excludedEnemyId?: string, owner?: PlayerShip): void {
+  private applySplashToEnemies(hit: { splashRadius: number; splashDamage: number; x: number; y: number; ownerId: string }, state: GameState, excludedEnemyId?: string, owner?: Ship): void {
     if (hit.splashRadius <= 0) return;
-    const aliveEnemies = Object.values(state.ships).filter((s): s is EnemyShip => s.controller === "ai" && s.alive);
+    const aliveEnemies = Object.values(state.ships).filter(s => s.controller === "ai" && s.alive);
     const kills = applyBulletSplash(hit.ownerId, hit.x, hit.y, hit.splashDamage, hit.splashRadius, aliveEnemies, excludedEnemyId);
     for (const k of kills) {
       if (state.ships[k.enemyId]) delete state.ships[k.enemyId];
       if (owner) owner.score += k.score;
-      this.broadcast({ type: "explosion", x: k.x, y: k.y, kind: k.kind });
+      this.broadcast({ type: "explosion", x: k.x, y: k.y, kind: k.shipClass });
     }
     this.broadcast({ type: "splash", x: hit.x, y: hit.y, radius: hit.splashRadius, weapon: "energy_bomb" });
   }
 
-  private applySplashToPlayers(hit: { splashRadius: number; splashDamage: number; x: number; y: number }, state: GameState, excludedPlayerId?: string, owner?: PlayerShip): void {
+  private applySplashToPlayers(hit: { splashRadius: number; splashDamage: number; x: number; y: number }, state: GameState, excludedPlayerId?: string, owner?: Ship): void {
     if (hit.splashRadius <= 0 || !owner) return;
     for (const player of Object.values(state.ships)) {
       if (player.controller !== "player" || !player.alive) continue;
@@ -204,14 +195,14 @@ export class CombatSystem {
     }
   }
 
-  resolveCollisions(alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
+  resolveCollisions(aliveShips: Ship[]): void {
     const state = this.getState();
-    for (const enemy of aliveEnemies) {
-      for (const player of alivePlayers) {
-        // 8. Omitimos a los espectadores (ya no actúan de muros invisibles)
+    const players = aliveShips.filter(s => s.controller === "player");
+    const enemies = aliveShips.filter(s => s.controller === "ai");
+    for (const enemy of enemies) {
+      for (const player of players) {
         if (player.team === "spectator") continue;
 
-        // 1. Colisiones con daño simétrico evaluando bHurt
         const { aHurt, bHurt } = resolveShipCollision(player, enemy);
 
         if (aHurt) {
@@ -228,26 +219,25 @@ export class CombatSystem {
         if (bHurt) {
           const result = applyShipDamage(enemy, 1, true);
           if (result.dead) {
-            enemy.alive = false; // Flag crucial para romper colisiones fantasma en la misma iteración
+            enemy.alive = false;
             delete state.ships[enemy.id];
-            this.broadcast({ type: "explosion", x: enemy.x, y: enemy.y, kind: enemy.kind, shipClass: enemy.shipClass });
+            this.broadcast({ type: "explosion", x: enemy.x, y: enemy.y, kind: enemy.shipClass, shipClass: enemy.shipClass });
             this.markDirty();
-            break; // Pasamos al siguiente enemigo para no dañar a más jugadores si ya explotó
+            break;
           }
         }
       }
     }
   }
 
-  resolveWaveCompletion(alivePlayers: PlayerShip[]): void {
+  resolveWaveCompletion(alivePlayers: Ship[]): void {
     const state = this.getState();
-    const remainingEnemies = this.getEnemyShips().filter(e => e.alive);
+    const remainingEnemies = Object.values(state.ships).filter(s => s.controller === "ai" && s.alive);
     if (remainingEnemies.length > 0 || alivePlayers.length === 0) return;
 
     state.wave++;
 
-    // 14. Revivir a todos los jugadores aliados que cayeron en la wave (spectators omitidos)
-    const allPlayers = this.getPlayerShips();
+    const allPlayers = Object.values(state.ships).filter(s => s.controller === "player");
     for (const player of allPlayers) {
       if (player.team === "spectator") continue;
 
@@ -264,8 +254,8 @@ export class CombatSystem {
       player.iFrames = 60;
     }
 
-    for (const enemy of spawnWave(state.wave)) {
-      state.ships[enemy.id] = enemy;
+    for (const { ship } of spawnWave(state.wave)) {
+      state.ships[ship.id] = ship;
     }
 
     this.broadcast({ type: "new_wave", wave: state.wave });
@@ -311,35 +301,26 @@ export class CombatSystem {
     this.broadcast({ type: "shockwave", x: originX, y: originY, weapon, ownerId });
   }
 
-  private findTargetId(player: PlayerShip, weapon: WeaponKind): string | undefined {
+  private findTargetId(ship: Ship, weapon: WeaponKind): string | undefined {
     if (weapon !== "guided_missile" && weapon !== "torpedo") return undefined;
 
     const state = this.getState();
     let targetId: string | undefined;
 
-    // 9. Uso de variables semánticas en lugar de distancias mágicas
     let closestDSq = weapon === "torpedo"
       ? CombatSystem.TORPEDO_MAX_DIST_SQ
       : CombatSystem.GUIDED_MISSILE_MAX_DIST_SQ;
 
-    for (const [id, ship] of Object.entries(state.ships)) {
-      if (!ship.alive || id === player.id) continue;
-      if (ship.controller === "player" && (ship.team === player.team || ship.team === "spectator")) continue;
+    for (const [id, other] of Object.entries(state.ships)) {
+      if (!other.alive || id === ship.id) continue;
+      if (other.controller === "player" && (other.team === ship.team || other.team === "spectator")) continue;
 
-      const dSq = distSq(player, ship);
+      const dSq = distSq(ship, other);
       if (dSq < closestDSq) {
         closestDSq = dSq;
         targetId = id;
       }
     }
     return targetId;
-  }
-
-  private getPlayerShips(): PlayerShip[] {
-    return Object.values(this.getState().ships).filter((s): s is PlayerShip => s.controller === "player");
-  }
-
-  private getEnemyShips(): EnemyShip[] {
-    return Object.values(this.getState().ships).filter((s): s is EnemyShip => s.controller === "ai");
   }
 }

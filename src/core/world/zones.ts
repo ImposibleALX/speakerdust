@@ -1,7 +1,7 @@
 // zonesSystem.ts
 // Naval objective control logic with red vs blue vs enemy progress bars.
 
-import type { EnemyShip, PlayerShip } from "../ships/shipTypes";
+import type { Ship } from "../ships/shipTypes";
 import { clamp } from "../math";
 import { WORLD_H, WORLD_W } from "./mapConfig";
 
@@ -90,8 +90,8 @@ export interface ZoneChangeEvent {
 
 export function updateControlPoints(
   zones: Record<string, ControlPoint>,
-  playerShips: PlayerShip[],
-  enemyShips: EnemyShip[],
+  playerShips: Ship[],
+  enemyShips: Ship[],
   wave: number,
 ): ZoneChangeEvent[] {
   const events: ZoneChangeEvent[] = [];
@@ -163,7 +163,7 @@ function resolveOwner(red: number, blue: number, enemy: number): ZoneOwner {
 }
 
 export function getZoneBonusForShip(
-  ship: PlayerShip,
+  ship: Ship,
   zones: Record<string, ControlPoint>,
 ): ShipZoneBonus {
   for (const zone of Object.values(zones)) {

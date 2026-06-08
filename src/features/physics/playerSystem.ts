@@ -2,7 +2,7 @@
 // Player lifecycle and shared naval ship physics.
 
 import {
-  BaseShip, PlayerShip, Ship, ShipClass,
+  Ship, ShipClass,
   Team,
 } from "../../core/ships/shipTypes";
 import type { WeaponKind } from "../../core/combat/weaponStats";
@@ -24,7 +24,7 @@ const EMPTY_BONUS: ShipZoneBonus = {
   pressureScale: 1,
 };
 
-function applyClassStats(ship: BaseShip, shipClass: ShipClass): void {
+function applyClassStats(ship: Ship, shipClass: ShipClass): void {
   const stats = classStats(shipClass);
   ship.shipClass = shipClass;
   ship.role = stats.role;
@@ -38,7 +38,7 @@ function applyClassStats(ship: BaseShip, shipClass: ShipClass): void {
   if (!ship.weaponSlots.includes(ship.weapon)) ship.weapon = ship.weaponSlots[0]!;
 }
 
-export function createPlayer(playerId: string, team: Team): PlayerShip {
+export function createPlayer(playerId: string, team: Team): Ship {
   const hue = Math.floor(Math.random() * 360);
   const stats = SHIP_CLASS_STATS[DEFAULT_PLAYER_CLASS];
   return {
@@ -86,7 +86,7 @@ export function createPlayer(playerId: string, team: Team): PlayerShip {
   };
 }
 
-export function respawnPlayer(player: PlayerShip): void {
+export function respawnPlayer(player: Ship): void {
   const stats = classStats(player.shipClass || DEFAULT_PLAYER_CLASS);
   player.x = rand(200, WORLD_W - 200);
   player.y = rand(200, WORLD_H - 200);
@@ -114,12 +114,12 @@ export function respawnPlayer(player: PlayerShip): void {
   applyClassStats(player, player.shipClass || DEFAULT_PLAYER_CLASS);
 }
 
-export function resetPlayerFull(player: PlayerShip): void {
+export function resetPlayerFull(player: Ship): void {
   respawnPlayer(player);
   player.score = 0;
 }
 
-export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBonus> | number = EMPTY_BONUS): void {
+export function updateShipPhysics(ship: Ship, zoneBonus: Partial<ShipZoneBonus> | number = EMPTY_BONUS): void {
   const bonus = typeof zoneBonus === "number"
     ? { ...EMPTY_BONUS, heatCool: zoneBonus * 0.1, energyRegen: zoneBonus * 0.1, shieldDelay: zoneBonus }
     : { ...EMPTY_BONUS, ...zoneBonus };
@@ -186,7 +186,7 @@ export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBon
   ship.weaponHeat = clamp(ship.weaponHeat, 0, SHIP_HEAT_LIMIT + 40);
 }
 
-export function applyWeaponRecoil(ship: BaseShip, angle: number, recoil: number): void {
+export function applyWeaponRecoil(ship: Ship, angle: number, recoil: number): void {
   if (recoil <= 0) return;
   const impulse = recoil / Math.max(1, ship.mass);
   ship.vx -= Math.cos(angle) * impulse;
@@ -200,14 +200,14 @@ export interface DamageResult {
 }
 
 export function applyShipDamage(
-  ship: BaseShip,
+  ship: Ship,
   damage: number,
   fromImpact = false,
   armorPierce = false,
 ): DamageResult {
   if (!ship.alive) return { dead: false, shieldHit: false, armorHit: false };
   if (ship.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
-  if ((ship as PlayerShip).godmode) return { dead: false, shieldHit: false, armorHit: false };
+  if (ship.godmode) return { dead: false, shieldHit: false, armorHit: false };
 
   const stats = classStats(ship.shipClass);
   // 1. Escudos (Absorción completa por carga)
@@ -251,8 +251,8 @@ export interface CollisionResult {
  * Los parámetros _kindA y _kindB se reservan para lógica futura de equipos.
  */
 export function resolveShipCollision(
-  shipA: BaseShip,
-  shipB: BaseShip,
+  shipA: Ship,
+  shipB: Ship,
   _kindA?: string,
   _kindB?: string,
 ): CollisionResult {

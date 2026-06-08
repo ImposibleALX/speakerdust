@@ -13,10 +13,24 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
 
   const shipCache = new Map<string, ShipCacheEntry>();
 
+  // --- OPTIMIZACIÓN EXTREMA: Uso de WeakMap para evitar escanear el Grid ---
+  let gridIdCounter = 0;
+  const gridIds = new WeakMap<PixelGrid, number>();
+
+  function getGridId(grid: PixelGrid): number {
+    let id = gridIds.get(grid);
+    if (id === undefined) {
+      id = ++gridIdCounter;
+      gridIds.set(grid, id);
+    }
+    return id;
+  }
+
   let paletteVersion = 0;
   const paletteKeys = new Map<string, number>();
 
   function paletteId(palette: Record<number, string>): number {
+    // Stringify rápido de objetos pequeños para evitar lag
     const str = JSON.stringify(palette);
     const existing = paletteKeys.get(str);
     if (existing !== undefined) return existing;
@@ -25,18 +39,13 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     return id;
   }
 
-  // Genera una cadena rápida y única para el contenido del grid
-  function gridHash(grid: PixelGrid): string {
-    // Convertir cada fila en una cadena numérica separada por comas, y unirlas con punto y coma
-    return grid.map(row => row.join(',')).join(';');
-  }
-
   function getCachedShip(
     grid: PixelGrid,
     palette: Record<number, string>,
     ps: number
   ): ShipCacheEntry {
-    const key = `${grid.length}_${grid[0]!.length}_${ps}_${paletteId(palette)}_${gridHash(grid)}`;
+    // Usamos el ID instantáneo del WeakMap en lugar del costoso gridHash
+    const key = `${getGridId(grid)}_${ps}_${paletteId(palette)}`;
     const existing = shipCache.get(key);
     if (existing) return existing;
 
@@ -46,6 +55,7 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     oc.width = cols * ps;
     oc.height = rows * ps;
     const octx = oc.getContext("2d")!;
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const v = grid[r]![c]!;
@@ -54,6 +64,7 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
         octx.fillRect(c * ps, r * ps, ps, ps);
       }
     }
+
     const entry: ShipCacheEntry = { canvas: oc, cx: oc.width / 2, cy: oc.height / 2 };
     shipCache.set(key, entry);
     return entry;

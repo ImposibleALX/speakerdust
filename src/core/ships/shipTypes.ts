@@ -12,23 +12,14 @@ export type ShipClass =
   | "battleship"
   | "dreadnought";
 
-export type AiKind =
-  | "corvette"
-  | "destroyer"
-  | "frigate"
-  | "cruiser"
-  | "battleship"
-  | "dreadnought";
-
-export interface BaseShip {
+export interface Ship {
   id: string;
   controller: Controller;
   shipClass: ShipClass;
 
-  /** Flavour text describing the intended combat role */
   role?: string;
 
-  // ========== Física y movilidad ==========
+  // Physics
   mass: number;
   turnRate: number;
   drag: number;
@@ -36,13 +27,13 @@ export interface BaseShip {
   thrustForce: number;
   strafeThrustForce: number;
 
-  // ========== Armamento ==========
+  // Weapons
   weaponSlots: WeaponKind[];
   weapon: WeaponKind;
   shootCooldown: number;
   weaponHeat: number;
 
-  // ========== Defensa y vida ==========
+  // Defense
   hp: number;
   maxHp: number;
   armor: number;
@@ -52,16 +43,16 @@ export interface BaseShip {
   shieldRegenDelay: number;
   iFrames: number;
 
-  // ========== Energía y turbo ==========
+  // Boost
   boostEnergy: number;
   boostCooldown: number;
   boostQueued: boolean;
 
-  // ========== Estados ==========
+  // Status
   empTicks: number;
   alive: boolean;
 
-  // ========== Control ==========
+  // Control
   inputForward: number;
   inputStrafe: number;
   angle: number;
@@ -71,17 +62,12 @@ export interface BaseShip {
   vx: number;
   vy: number;
 
-  // ====== Atributos estratégicos opcionales (caché de rendimiento) ======
-  /** Velocidad de enfriamiento de calor; si no se define se usa classStats */
+  // Optional stat overrides
   heatCoolRate?: number;
-  /** Intervalo entre regeneraciones de escudo; si no se define se usa classStats */
   shieldRegenInterval?: number;
-  /** Tasa de regeneración de energía de turbo; si no se define se usa classStats */
   boostRegenRate?: number;
-}
 
-export interface PlayerShip extends BaseShip {
-  controller: "player";
+  // Player-only fields (defaults for AI)
   name: string;
   color: string;
   team: Team;
@@ -91,21 +77,16 @@ export interface PlayerShip extends BaseShip {
   inputSeq: number;
 }
 
-export interface EnemyShip extends BaseShip {
-  controller: "ai";
-  kind: AiKind;
+/** AI memory stored externally, keyed by ship id */
+export interface AiState {
+  targetId?: string;
+  lastSeenPos?: { x: number; y: number };
+  reactionTicks: number;
+  aimJitter: number;
+  maneuverTimer: number;
+  maneuverDir: -1 | 1;
+  strafing: boolean;
+  frustration: number;
   wave: number;
   formationIndex: number;
-
-  // IA específica
-  aiTargetId?: string;
-  aiLastSeenPos?: { x: number; y: number };
-  aiReactionTicks: number;
-  aiAimJitter: number;
-  aiManeuverTimer: number;
-  aiManeuverDir: number;
-  aiStrafing: boolean;
-  aiFrustration: number;
 }
-
-export type Ship = PlayerShip | EnemyShip;

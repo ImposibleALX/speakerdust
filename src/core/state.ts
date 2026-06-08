@@ -1,6 +1,6 @@
 import type { Projectile } from "./combat/projectiles";
 import type { ControlPoint, ObjectiveKind, ZoneOwner } from "./world/zones";
-import type { AiKind, Controller, PlayerShip, Ship, ShipClass, Team } from "./ships/shipTypes";
+import type { Controller, Ship, ShipClass, Team } from "./ships/shipTypes";
 
 export interface GameState {
   ships: Record<string, Ship>;
@@ -37,8 +37,6 @@ export interface PublicShip {
   score?: number;
   isAdmin?: boolean;
   inputSeq?: number;
-  kind?: AiKind;
-  aiFrustration?: number;
 }
 
 export interface PublicZone {
@@ -77,18 +75,12 @@ export function toPublicShip(s: Ship): PublicShip {
     weaponHeat: Math.round(s.weaponHeat),
     empTicks: s.empTicks,
   };
-  if (s.controller === "player") {
-    const player = s as PlayerShip;
-    pub.name = player.name;
-    pub.color = player.color;
-    pub.team = player.team;
-    pub.score = player.score;
-    pub.isAdmin = player.isAdmin;
-    pub.inputSeq = player.inputSeq;
-  } else {
-    pub.kind = s.kind;
-    pub.aiFrustration = Math.round(s.aiFrustration);
-  }
+  pub.name = s.name;
+  pub.color = s.color;
+  pub.team = s.team;
+  pub.score = s.score;
+  pub.isAdmin = s.isAdmin;
+  pub.inputSeq = s.inputSeq;
   return pub;
 }
 

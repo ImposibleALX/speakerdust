@@ -1,16 +1,11 @@
-// persistence.ts
-// State snapshot, versioning, migration guard, and non-lossy write queue.
-
-import {
-  GameState,
-} from "../../core/state";
-import type { PlayerShip, EnemyShip, Ship, ShipClass, AiKind } from "../../core/ships/shipTypes";
-import type { ControlPoint } from "../../core/world/zones";
+import type { Ship, ShipClass, Team } from "../../core/ships/shipTypes";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
-import { DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, AI_KIND_CLASS, AI_STATS, classStats } from "../../core/ships/shipStats";
+import type { ControlPoint } from "../../core/world/zones";
 import { initZones } from "../../core/world/zones";
-import { SNAPSHOT_VERSION } from "./constants";
+import { DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats } from "../../core/ships/shipStats";
+import type { GameState } from "../../core/state";
+import { SNAPSHOT_VERSION, SNAPSHOT_KEY } from "./constants";
 
 const ALLOWED_WEAPONS = new Set(Object.keys(WEAPON_STATS));
 
@@ -20,15 +15,17 @@ export interface PersistedState {
   zones: Record<string, ControlPoint>;
   wave: number;
   tick: number;
+  aiStates: Record<string, unknown>;
 }
 
-export function serializeForStorage(state: GameState): PersistedState {
+export function serializeForStorage(state: GameState, aiStates: Map<string, unknown>): PersistedState {
   return {
     version: SNAPSHOT_VERSION,
     ships: state.ships,
     zones: state.zones,
     wave: state.wave,
     tick: state.tick,
+    aiStates: Object.fromEntries(aiStates),
   };
 }
 
@@ -77,27 +74,21 @@ class ShipSerializer {
   static normalise(raw: unknown): Ship | null {
     if (!raw || typeof raw !== "object") return null;
     const r = raw as Record<string, unknown>;
-    if (r.controller === "player") return this.normalisePlayer(r);
-    if (r.controller === "ai") return this.normaliseEnemy(r);
-    return null;
-  }
-
-  private static normalisePlayer(r: Record<string, unknown>): PlayerShip {
     const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASS_STATS) as ShipClass[]);
     const stats = classStats(shipClass);
     const slots = weaponList(r.weaponSlots, stats.weaponSlots);
     const weapon = str<WeaponKind>(r.weapon, slots[0]!, slots);
+    const controller = str(r.controller, "player", ["player", "ai"] as const);
     return {
       id: str(r.id, "unknown"),
-      controller: "player",
+      controller,
       shipClass,
       role: str(r.role, stats.role),
       mass: num(r.mass, stats.mass),
       turnRate: num(r.turnRate, stats.turnRate),
       weaponSlots: slots,
       x: num(r.x, 600), y: num(r.y, 400),
-      vx: num(r.vx, 0),
-      vy: num(r.vy, 0),
+      vx: num(r.vx, 0), vy: num(r.vy, 0),
       angle: num(r.angle, -Math.PI / 2),
       targetAngle: num(r.targetAngle, -Math.PI / 2),
       hp: num(r.hp, stats.maxHp),
@@ -121,67 +112,13 @@ class ShipSerializer {
       maxSpeed: num(r.maxSpeed, stats.maxSpeed),
       thrustForce: num(r.thrustForce, stats.thrustForce),
       strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
-      name: str(r.name, "CAPTAIN"),
+      name: str(r.name, ""),
       color: str(r.color, "hsl(180,80%,65%)"),
       team: str(r.team, "red", ["red", "blue", "spectator"] as const),
       score: num(r.score, 0),
       isAdmin: bool(r.isAdmin, false),
       godmode: bool(r.godmode, false),
       inputSeq: num(r.inputSeq, 0),
-    };
-  }
-
-  private static normaliseEnemy(r: Record<string, unknown>): EnemyShip {
-    const kind = str<AiKind>(r.kind, "corvette", Object.keys(AI_KIND_CLASS) as AiKind[]);
-    const shipClass = AI_KIND_CLASS[kind];
-    const stats = classStats(shipClass);
-    const ai = AI_STATS[kind];
-    return {
-      id: str(r.id, "unknown"),
-      controller: "ai",
-      shipClass,
-      role: stats.role,
-      mass: stats.mass,
-      turnRate: stats.turnRate,
-      weaponSlots: [...stats.weaponSlots],
-      x: num(r.x, 0), y: num(r.y, 0),
-      vx: num(r.vx, 0), vy: num(r.vy, 0),
-      angle: num(r.angle, 0),
-      targetAngle: num(r.targetAngle, 0),
-      hp: num(r.hp, stats.maxHp),
-      maxHp: num(r.maxHp, stats.maxHp),
-      armor: num(r.armor, stats.armorMax),
-      armorMax: num(r.armorMax, stats.armorMax),
-      // Simetría exacta con player: sin debuffs arbitrarios
-      shieldMax: num(r.shieldMax, stats.shieldMax),
-      shield: num(r.shield, stats.shieldMax),
-      shieldRegenDelay: num(r.shieldRegenDelay, 0),
-      weapon: ai.preferredWeapon,
-      shootCooldown: num(r.shootCooldown, Math.floor(Math.random() * 50)),
-      weaponHeat: num(r.weaponHeat, 0),
-      boostEnergy: num(r.boostEnergy, 0),
-      boostCooldown: num(r.boostCooldown, 0),
-      boostQueued: false,
-      empTicks: num(r.empTicks, 0),
-      inputForward: 0, inputStrafe: 0,
-      iFrames: num(r.iFrames, 0),
-      alive: bool(r.alive, true),
-      // Física base idéntica a la del jugador de su clase
-      drag: stats.drag,
-      maxSpeed: num(r.maxSpeed, stats.maxSpeed),
-      thrustForce: num(r.thrustForce, stats.thrustForce),
-      strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
-      kind,
-      wave: num(r.wave, 1),
-      formationIndex: num(r.formationIndex, 0),
-      aiTargetId: r.aiTargetId as string | undefined,
-      aiLastSeenPos: r.aiLastSeenPos as { x: number; y: number } | undefined,
-      aiReactionTicks: num(r.aiReactionTicks, 8),
-      aiAimJitter: num(r.aiAimJitter, 0.05),
-      aiManeuverTimer: num(r.aiManeuverTimer, 60),
-      aiManeuverDir: num(r.aiManeuverDir, 1) === -1 ? -1 : 1,
-      aiStrafing: bool(r.aiStrafing, false),
-      aiFrustration: num(r.aiFrustration, 0),
     };
   }
 }
@@ -221,10 +158,7 @@ export class PersistenceQueue {
   }
 
   markDirty(): void {
-    if (!this.hydrated) {
-      this.pendingDirty = true;
-      return;
-    }
+    if (!this.hydrated) { this.pendingDirty = true; return; }
     if (this.saving) this.dirtyWhileSaving = true;
     else void this.flush();
   }
@@ -232,11 +166,7 @@ export class PersistenceQueue {
   private async flush(): Promise<void> {
     this.saving = true;
     this.dirtyWhileSaving = false;
-    try {
-      await this.doSave();
-    } catch {
-      // Storage errors are non-fatal; state stays in memory.
-    } finally {
+    try { await this.doSave(); } catch { } finally {
       this.saving = false;
       if (this.dirtyWhileSaving) void this.flush();
     }
