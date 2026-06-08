@@ -625,14 +625,15 @@ function drawShipEngines(
     ctx.save();
     ctx.globalCompositeOperation = "screen";
 
+    const visualAngle = angle + Math.PI / 2;
+    const cos = Math.cos(visualAngle);
+    const sin = Math.sin(visualAngle);
+
     const dir = reverse ? -1 : 1;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
 
     for (const engine of attachments.engines) {
         const mx = engine.x * ps;
-        const my = (engine.y * ps) * dir;
-
+        const my = engine.y * ps;
         const ex = x + mx * cos - my * sin;
         const ey = y + mx * sin + my * cos;
 
@@ -641,8 +642,8 @@ function drawShipEngines(
 
         for (let i = 0; i < len; i++) {
             const t = i / len;
-            const trailDx = -cos * dir;
-            const trailDy = -sin * dir;
+            const trailDx = -Math.cos(angle) * dir;
+            const trailDy = -Math.sin(angle) * dir;
 
             const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
             const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.5);

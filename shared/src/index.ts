@@ -12,8 +12,6 @@ export type {
 
 export { WEAPON_DEFS, WEAPON_STATS, EMP_DURATION_TICKS, HITBOX_PLAYER_BULLET_DEFAULT_SQ, HITBOX_ENEMY_BULLET_SQ } from "./weapons/weaponDefs";
 
-export type { AttachmentPoint, ShipAttachments, Loadout, MountArc } from "./ships/attachmentTypes";
+export type { AttachmentPoint, ShipAttachments, Loadout, MountArc, PaletteIndex, PixelGrid, ShipBitmapKey } from "./ships/shipAttachments";
 
 export { SHIP_ATTACHMENTS, DEFAULT_LOADOUTS } from "./ships/shipAttachments";
-
-export type { PaletteIndex, PixelGrid, ShipBitmapKey } from "./ships/attachmentTypes";

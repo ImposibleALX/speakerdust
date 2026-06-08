@@ -106,12 +106,13 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     const attachments = SHIP_ATTACHMENTS[shipType];
     if (!attachments) return;
 
+    const visualAngle = shipAngle + Math.PI / 2;
+    const cos = Math.cos(visualAngle);
+    const sin = Math.sin(visualAngle);
+
     for (const mount of attachments.weapons) {
       const weaponKind = loadout[mount.id];
       if (!weaponKind) continue;
-
-      const cos = Math.cos(shipAngle);
-      const sin = Math.sin(shipAngle);
 
       const mx = mount.x * ps;
       const my = mount.y * ps;
