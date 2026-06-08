@@ -21,6 +21,8 @@ export type AdminEffect =
   | { kind: "kick";         playerId: string }
   | { kind: "set_wave";     wave: number }
   | { kind: "clear_enemies" }
+  | { kind: "godmode";      active: boolean }
+  | { kind: "heal_all" }
   | { kind: "none" };
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -87,6 +89,28 @@ export function handleAdmin(
         if (ship.controller === "ai") delete state.ships[id];
       }
       return { kind: "clear_enemies" };
+    }
+
+    case "admin_godmode": {
+      if (!player.isAdmin) return { kind: "none" };
+      player.godmode = !player.godmode;
+      return { kind: "godmode", active: player.godmode };
+    }
+
+    case "admin_heal_all": {
+      if (!player.isAdmin) return { kind: "none" };
+      for (const ship of Object.values(state.ships)) {
+        if (ship.controller !== "player") continue;
+        const p = ship as PlayerShip;
+        if (!p.alive) continue;
+        p.hp = p.maxHp;
+        p.shield = p.shieldMax;
+        p.armor = p.armorMax;
+        p.shieldRegenDelay = 0;
+        p.boostEnergy = 100;
+        p.weaponHeat = 0;
+      }
+      return { kind: "heal_all" };
     }
 
     default:

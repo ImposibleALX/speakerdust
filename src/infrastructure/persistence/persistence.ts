@@ -49,7 +49,7 @@ export function hydrateState(stored: unknown): GameState | null {
 
   return {
     ships,
-    bullets: {},
+    projectiles: {},
     zones,
     wave: typeof s.wave === "number" ? Math.max(1, s.wave) : 1,
     tick: typeof s.tick === "number" ? s.tick : 0,
@@ -73,11 +73,6 @@ function weaponList(v: unknown, def: WeaponKind[]): WeaponKind[] {
   return out.length ? out : [...def];
 }
 
-/**
- * ShipSerializer encapsulates the logic for transforming stored data into
- * live Ship objects. It ensures that dynamic state (cooldowns, physics, heat)
- * is correctly restored to maintain gameplay continuity.
- */
 class ShipSerializer {
   static normalise(raw: unknown): Ship | null {
     if (!raw || typeof raw !== "object") return null;
@@ -91,7 +86,7 @@ class ShipSerializer {
     const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASS_STATS) as ShipClass[]);
     const stats = classStats(shipClass);
     const slots = weaponList(r.weaponSlots, stats.weaponSlots);
-    const weapon = str<WeaponKind>(r.weapon, slots[0], slots);
+    const weapon = str<WeaponKind>(r.weapon, slots[0]!, slots);
     return {
       id: str(r.id, "unknown"),
       controller: "player",
@@ -131,6 +126,8 @@ class ShipSerializer {
       team: str(r.team, "red", ["red", "blue", "spectator"] as const),
       score: num(r.score, 0),
       isAdmin: bool(r.isAdmin, false),
+      godmode: bool(r.godmode, false),
+      inputSeq: num(r.inputSeq, 0),
     };
   }
 
@@ -155,8 +152,9 @@ class ShipSerializer {
       maxHp: num(r.maxHp, stats.maxHp),
       armor: num(r.armor, stats.armorMax),
       armorMax: num(r.armorMax, stats.armorMax),
-      shieldMax: Math.max(0, stats.shieldMax - 1),
-      shield: num(r.shield, Math.max(0, stats.shieldMax - 1)),
+      // Simetría exacta con player: sin debuffs arbitrarios
+      shieldMax: num(r.shieldMax, stats.shieldMax),
+      shield: num(r.shield, stats.shieldMax),
       shieldRegenDelay: num(r.shieldRegenDelay, 0),
       weapon: ai.preferredWeapon,
       shootCooldown: num(r.shootCooldown, Math.floor(Math.random() * 50)),
@@ -168,10 +166,11 @@ class ShipSerializer {
       inputForward: 0, inputStrafe: 0,
       iFrames: num(r.iFrames, 0),
       alive: bool(r.alive, true),
+      // Física base idéntica a la del jugador de su clase
       drag: stats.drag,
-      maxSpeed: stats.maxSpeed * 0.92,
-      thrustForce: stats.thrustForce * 0.9,
-      strafeThrustForce: stats.strafeThrustForce * 0.75,
+      maxSpeed: num(r.maxSpeed, stats.maxSpeed),
+      thrustForce: num(r.thrustForce, stats.thrustForce),
+      strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
       kind,
       wave: num(r.wave, 1),
       formationIndex: num(r.formationIndex, 0),

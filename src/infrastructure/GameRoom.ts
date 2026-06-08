@@ -16,12 +16,14 @@ import {
 } from "../features/physics/playerSystem";
 import {
   spawnWave, updateEnemyInputs, computeEnemyCounts, shouldEnemyFire,
-  generateEnemyBullets, applyBulletSplash, makeBullet,
+  generateEnemyBullets, applyBulletSplash,
 } from "../features/ai/enemySystem";
 import { initZones, updateControlPoints, getZoneBonusForShip, findNearestZone } from "../core/world/zones";
 import { PersistenceQueue, serializeForStorage, hydrateState, PersistedState } from "./persistence/persistence";
 import { SNAPSHOT_KEY } from "./persistence/constants";
 import { validateMessage, buildInitPayload, buildTickPayload, broadcast, checkMoveRate, checkShootRate, checkBoostRate } from "./network/network";
+import { isOriginAllowed, validateToken } from "./network/auth";
+import { checkConnectionRate } from "./network/rateLimit";
 import { handleAdmin } from "../features/admin/admin";
 import { CombatSystem } from "../features/combat/combatSystem";
 
@@ -30,9 +32,9 @@ export type { Env };
 
 class GameRoom extends DurableObject<Env> {
   private state: GameState = {
-    ships: {}, bullets: {}, zones: {}, wave: 1, tick: 0,
+    ships: {}, projectiles: {}, zones: {}, wave: 1, tick: 0,
   };
-  private loopTimer: ReturnType<typeof setInterval> | null = null;
+
   private readonly persistence: PersistenceQueue;
   private readonly combat: CombatSystem;
 
@@ -43,6 +45,7 @@ class GameRoom extends DurableObject<Env> {
     this.persistence = new PersistenceQueue(async () => {
       await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state));
     });
+
     this.combat = new CombatSystem(
       () => this.state,
       payload => this.safeBroadcast(payload),
@@ -50,40 +53,126 @@ class GameRoom extends DurableObject<Env> {
     );
 
     this.ctx.blockConcurrencyWhile(async () => {
+      // Clear any stale alarm from a previous run so the object starts from a
+      // clean state and does not inherit a broken timer.
+      try {
+        await this.ctx.storage.deleteAlarm();
+      } catch {
+        /* ignore */
+      }
+
       const stored = await this.ctx.storage.get<PersistedState>(SNAPSHOT_KEY);
       const hydrated = stored ? hydrateState(stored) : null;
+
       if (hydrated) {
         this.state = hydrated;
       } else {
         for (const enemy of spawnWave(1)) this.state.ships[enemy.id] = enemy;
       }
+
       this.persistence.setHydrated();
       this.persistence.markDirty();
-    });
 
-    this.startLoop();
+      // Heal or bootstrap the alarm after state is ready.
+      await this.reconcileAlarmState();
+    });
   }
 
   // ── Network Helpers ────────────────────────────────────────────────────────
-  private safeSend(ws: WebSocket, payload: any): void {
+  private safeSend(ws: WebSocket, payload: unknown): void {
     try {
-      if (ws.readyState === WebSocket.READY_STATE_OPEN) {
+      if (ws.readyState === 1 /* WebSocket.OPEN */) {
         ws.send(JSON.stringify(payload));
       }
     } catch {
-      // Ignorar errores de socket cerrado silenciosamente
+      /* socket cerrado */
     }
   }
 
-  private safeBroadcast(payload: any): void {
+  private safeBroadcast(payload: object): void {
     broadcast(this.ctx.getWebSockets(), payload);
+  }
+
+  private getClientIP(request: Request): string {
+    return request.headers.get("CF-Connecting-IP")
+      ?? request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim()
+      ?? "unknown";
+  }
+
+  private hasActiveGame(): boolean {
+    return this.getPlayerShips().length > 0 || this.getEnemyShips().length > 0;
+  }
+
+  private async reconcileAlarmState(): Promise<void> {
+    try {
+      const active = this.hasActiveGame();
+      const currentAlarm = await this.ctx.storage.getAlarm();
+
+      if (!active) {
+        if (currentAlarm !== null) {
+          await this.ctx.storage.deleteAlarm();
+        }
+        return;
+      }
+
+      const now = Date.now();
+      const staleThresholdMs = Math.max(120_000, TICK_MS * 20);
+
+      // If the stored alarm is missing or clearly stale, reset it.
+      if (currentAlarm === null || currentAlarm < now - staleThresholdMs) {
+        await this.ctx.storage.deleteAlarm();
+        await this.ctx.storage.setAlarm(now + TICK_MS);
+      }
+    } catch (err) {
+      console.error("reconcileAlarmState failed:", err);
+    }
+  }
+
+  private async ensureNextTickAlarm(): Promise<void> {
+    try {
+      if (!this.hasActiveGame()) {
+        await this.ctx.storage.deleteAlarm();
+        return;
+      }
+
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
+    } catch (err) {
+      console.error("ensureNextTickAlarm failed:", err);
+    }
+  }
+
+  // ── Alarm-based Game Loop ─────────────────────────────────────────────────
+  async alarm(): Promise<void> {
+    await this.ctx.storage.sync();
+
+    const players = this.getPlayerShips();
+    const enemies = this.getEnemyShips();
+
+    if (players.length === 0 && enemies.length === 0) {
+      try {
+        await this.ctx.storage.deleteAlarm();
+      } catch {
+        /* ignore */
+      }
+      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state));
+      return;
+    }
+
+    try {
+      this.gameTick();
+    } catch (err) {
+      console.error("gameTick error:", err);
+    }
+
+    await this.ensureNextTickAlarm();
   }
 
   // ── Lifecycle & Connections ───────────────────────────────────────────────
   async fetch(request: Request): Promise<Response> {
-    const origin = request.headers.get("Origin") ?? "*";
+    const origin = request.headers.get("Origin") ?? "";
     const corsHeaders = {
-      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Origin": origin || "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Upgrade, Connection",
     };
@@ -93,6 +182,23 @@ class GameRoom extends DurableObject<Env> {
       return new Response("Speakerdust - connect via WebSocket", {
         status: 200, headers: { "Content-Type": "text/plain", ...corsHeaders },
       });
+    }
+
+    const url = new URL(request.url);
+    const token = url.searchParams.get("token") ?? "";
+
+    if (!isOriginAllowed(origin, this.env.ALLOWED_ORIGINS)) {
+      return new Response("Origin not allowed", { status: 403 });
+    }
+
+    const { valid } = validateToken(token, this.env.AUTH_SECRET);
+    if (!valid) {
+      return new Response("Invalid auth token", { status: 401 });
+    }
+
+    const clientIP = this.getClientIP(request);
+    if (!checkConnectionRate(clientIP)) {
+      return new Response("Rate limited", { status: 429 });
     }
 
     const { 0: client, 1: server } = new WebSocketPair();
@@ -116,7 +222,7 @@ class GameRoom extends DurableObject<Env> {
       player: { id: player.id, name: player.name, color: player.color, team: player.team },
     });
 
-    this.startLoop();
+    await this.ensureNextTickAlarm();
     this.persistence.markDirty();
 
     return new Response(null, { status: 101, webSocket: client });
@@ -149,7 +255,6 @@ class GameRoom extends DurableObject<Env> {
       }
       case "respawn": {
         if (!player.alive || player.team === "spectator") {
-          // Si es espectador, asignarle el equipo con menos gente antes de respawnear
           if (player.team === "spectator") {
             const ships = this.getPlayerShips();
             const red = ships.filter(p => p.team === "red").length;
@@ -159,6 +264,9 @@ class GameRoom extends DurableObject<Env> {
           }
           respawnPlayer(player);
           this.persistence.markDirty();
+          this.safeSend(ws, { type: "respawned" });
+
+          void this.reconcileAlarmState();
         }
         break;
       }
@@ -197,26 +305,12 @@ class GameRoom extends DurableObject<Env> {
       this.safeBroadcast({ type: "player_leave", playerId });
       this.combat.discardPendingShotsFor(playerId);
       this.persistence.markDirty();
-    }
 
-    if (this.getPlayerShips().length === 0) {
-      this.stopLoop();
-      this.persistence.markDirty();
+      void this.reconcileAlarmState();
     }
   }
 
   // ── Game Loop & Core Systems ──────────────────────────────────────────────
-  private startLoop(): void {
-    if (this.loopTimer) return;
-    this.loopTimer = setInterval(() => this.gameTick(), TICK_MS);
-  }
-
-  private stopLoop(): void {
-    if (!this.loopTimer) return;
-    clearInterval(this.loopTimer);
-    this.loopTimer = null;
-  }
-
   private gameTick(): void {
     const st = this.state;
     st.tick++;
@@ -285,12 +379,18 @@ class GameRoom extends DurableObject<Env> {
   // Utility
 
   private processPlayerMovement(player: PlayerShip, msg: any): void {
+    if (typeof msg.seq === "number") player.inputSeq = msg.seq;
+
     const hasLocal = typeof msg.forward === "number" || typeof msg.strafe === "number";
     const hasWorld = typeof msg.vx === "number" || typeof msg.vy === "number";
 
     if (hasLocal) {
-      player.inputForward = clamp(Number(msg.forward ?? 0), -1, 1);
-      player.inputStrafe = clamp(Number(msg.strafe ?? 0), -1, 1);
+      let f = clamp(Number(msg.forward ?? 0), -1, 1);
+      let s = clamp(Number(msg.strafe ?? 0), -1, 1);
+      const mag = Math.hypot(f, s);
+      if (mag > 1) { f /= mag; s /= mag; }
+      player.inputForward = f;
+      player.inputStrafe = s;
     } else if (hasWorld) {
       const rawX = clamp(Number(msg.vx ?? 0), -1, 1);
       const rawY = clamp(Number(msg.vy ?? 0), -1, 1);
@@ -317,6 +417,7 @@ class GameRoom extends DurableObject<Env> {
       case "reset_all":
         this.safeBroadcast({ type: "admin_event", action: "reset_all" });
         this.persistence.markDirty();
+        void this.reconcileAlarmState();
         break;
       case "kick": {
         const targetWs = this.ctx.getWebSockets().find(sock => {
@@ -328,15 +429,27 @@ class GameRoom extends DurableObject<Env> {
         }
         this.safeBroadcast({ type: "player_leave", playerId: effect.playerId });
         this.persistence.markDirty();
+        void this.reconcileAlarmState();
         break;
       }
       case "set_wave":
         this.safeBroadcast({ type: "new_wave", wave: effect.wave });
         this.persistence.markDirty();
+        void this.reconcileAlarmState();
         break;
       case "clear_enemies":
         this.safeBroadcast({ type: "admin_event", action: "clear_enemies" });
         this.persistence.markDirty();
+        void this.reconcileAlarmState();
+        break;
+      case "godmode":
+        this.safeSend(ws, { type: "admin_godmode", active: effect.active });
+        this.safeBroadcast({ type: "admin_event", action: "godmode", playerId: player.id, active: effect.active });
+        break;
+      case "heal_all":
+        this.safeBroadcast({ type: "admin_event", action: "heal_all" });
+        this.persistence.markDirty();
+        void this.reconcileAlarmState();
         break;
     }
   }

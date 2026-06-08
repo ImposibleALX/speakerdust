@@ -24,16 +24,25 @@ export interface BaseShip {
   id: string;
   controller: Controller;
   shipClass: ShipClass;
+
+  /** Flavour text describing the intended combat role */
   role?: string;
+
+  // ========== Física y movilidad ==========
   mass: number;
   turnRate: number;
+  drag: number;
+  maxSpeed: number;
+  thrustForce: number;
+  strafeThrustForce: number;
+
+  // ========== Armamento ==========
   weaponSlots: WeaponKind[];
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  angle: number;
-  targetAngle: number;
+  weapon: WeaponKind;
+  shootCooldown: number;
+  weaponHeat: number;
+
+  // ========== Defensa y vida ==========
   hp: number;
   maxHp: number;
   armor: number;
@@ -41,21 +50,34 @@ export interface BaseShip {
   shieldMax: number;
   shield: number;
   shieldRegenDelay: number;
-  weapon: WeaponKind;
-  shootCooldown: number;
-  weaponHeat: number;
+  iFrames: number;
+
+  // ========== Energía y turbo ==========
   boostEnergy: number;
   boostCooldown: number;
   boostQueued: boolean;
+
+  // ========== Estados ==========
   empTicks: number;
+  alive: boolean;
+
+  // ========== Control ==========
   inputForward: number;
   inputStrafe: number;
-  iFrames: number;
-  alive: boolean;
-  drag: number;
-  maxSpeed: number;
-  thrustForce: number;
-  strafeThrustForce: number;
+  angle: number;
+  targetAngle: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+
+  // ====== Atributos estratégicos opcionales (caché de rendimiento) ======
+  /** Velocidad de enfriamiento de calor; si no se define se usa classStats */
+  heatCoolRate?: number;
+  /** Intervalo entre regeneraciones de escudo; si no se define se usa classStats */
+  shieldRegenInterval?: number;
+  /** Tasa de regeneración de energía de turbo; si no se define se usa classStats */
+  boostRegenRate?: number;
 }
 
 export interface PlayerShip extends BaseShip {
@@ -65,6 +87,8 @@ export interface PlayerShip extends BaseShip {
   team: Team;
   score: number;
   isAdmin: boolean;
+  godmode: boolean;
+  inputSeq: number;
 }
 
 export interface EnemyShip extends BaseShip {
@@ -72,6 +96,8 @@ export interface EnemyShip extends BaseShip {
   kind: AiKind;
   wave: number;
   formationIndex: number;
+
+  // IA específica
   aiTargetId?: string;
   aiLastSeenPos?: { x: number; y: number };
   aiReactionTicks: number;

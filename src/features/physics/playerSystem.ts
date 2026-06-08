@@ -35,7 +35,7 @@ function applyClassStats(ship: BaseShip, shipClass: ShipClass): void {
   ship.thrustForce = stats.thrustForce;
   ship.strafeThrustForce = stats.strafeThrustForce;
   ship.weaponSlots = [...stats.weaponSlots];
-  if (!ship.weaponSlots.includes(ship.weapon)) ship.weapon = ship.weaponSlots[0];
+  if (!ship.weaponSlots.includes(ship.weapon)) ship.weapon = ship.weaponSlots[0]!;
 }
 
 export function createPlayer(playerId: string, team: Team): PlayerShip {
@@ -59,7 +59,7 @@ export function createPlayer(playerId: string, team: Team): PlayerShip {
     team,
     score: 0,
     alive: true,
-    weapon: stats.weaponSlots[0],
+    weapon: stats.weaponSlots[0]!,
     shootCooldown: 0,
     weaponHeat: 0,
     boostCooldown: 0,
@@ -77,6 +77,8 @@ export function createPlayer(playerId: string, team: Team): PlayerShip {
     boostQueued: false,
     iFrames: 60,
     isAdmin: false,
+    godmode: false,
+    inputSeq: 0,
     drag: stats.drag,
     maxSpeed: stats.maxSpeed,
     thrustForce: stats.thrustForce,
@@ -92,7 +94,7 @@ export function respawnPlayer(player: PlayerShip): void {
   player.angle = -Math.PI / 2;
   player.targetAngle = -Math.PI / 2;
   player.alive = true;
-  player.weapon = stats.weaponSlots[0];
+  player.weapon = stats.weaponSlots[0]!;
   player.shootCooldown = 0;
   player.weaponHeat = 0;
   player.boostCooldown = 0;
@@ -171,6 +173,8 @@ export function updateShipPhysics(ship: BaseShip, zoneBonus: Partial<ShipZoneBon
   if (ship.shieldMax > 0 && ship.shield < ship.shieldMax) {
     if (ship.shieldRegenDelay > 0) {
       ship.shieldRegenDelay -= Math.max(1, 1 + bonus.shieldDelay);
+      // Aseguramos que el retardo nunca sea negativo
+      if (ship.shieldRegenDelay < 0) ship.shieldRegenDelay = 0;
     } else {
       ship.shield++;
       ship.shieldRegenDelay = stats.shieldRegenInterval;
@@ -203,6 +207,7 @@ export function applyShipDamage(
 ): DamageResult {
   if (!ship.alive) return { dead: false, shieldHit: false, armorHit: false };
   if (ship.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
+  if ((ship as PlayerShip).godmode) return { dead: false, shieldHit: false, armorHit: false };
 
   const stats = classStats(ship.shipClass);
   // 1. Escudos (Absorción completa por carga)
@@ -213,14 +218,14 @@ export function applyShipDamage(
     return { dead: false, shieldHit: true, armorHit: false };
   }
 
-  // 2. Blindaje (Mitigación profesional: reduce daño pero se desgasta)
+  // 2. Blindaje (mitigación consistente: cada punto de armadura absorbe al menos 1 daño)
   let hullDamage = damage;
   if (ship.armor > 0 && !armorPierce) {
-    // El blindaje bloquea una porción del daño base según su espesor actual
-    const reduction = Math.floor(ship.armor * 0.45);
-    const absorbed = Math.max(1, Math.min(ship.armor, reduction));
+    // La cantidad de daño que se absorbe es el mínimo entre la armadura actual y una porción de la misma
+    const absorbable = Math.floor(ship.armor * 0.45);
+    const absorbed = Math.max(1, Math.min(ship.armor, absorbable));
     ship.armor -= absorbed;
-    hullDamage = Math.max(1, damage - reduction);
+    hullDamage = Math.max(0, damage - absorbed);      // El daño sobrante llega al casco
   }
 
   ship.hp = Math.max(0, ship.hp - hullDamage);
@@ -240,6 +245,11 @@ export interface CollisionResult {
   bHurt: boolean;
 }
 
+/**
+ * Resuelve una colisión entre dos naves de forma 100% simétrica,
+ * sin temblores ni superposiciones persistentes.
+ * Los parámetros _kindA y _kindB se reservan para lógica futura de equipos.
+ */
 export function resolveShipCollision(
   shipA: BaseShip,
   shipB: BaseShip,
@@ -261,27 +271,37 @@ export function resolveShipCollision(
   const ny = dy / dist;
   const overlap = combined - dist;
 
-  // Velocidad de impacto combinada
-  const relSpeed = Math.hypot(shipA.vx - shipB.vx, shipA.vy - shipB.vy);
-
   const massA = Math.max(1, shipA.mass);
   const massB = Math.max(1, shipB.mass);
   const totalMass = massA + massB;
-  const push = Math.max(0.25, overlap * 0.16);
 
-  // Desplazamiento posicional proporcional a la masa
-  shipA.x += nx * push * (massB / totalMass);
-  shipA.y += ny * push * (massB / totalMass);
-  shipB.x -= nx * push * (massA / totalMass);
-  shipB.y -= ny * push * (massA / totalMass);
+  // Separación completa sin sobrereacción:
+  // cada nave se desplaza proporcionalmente a la masa del otro.
+  const pushA = overlap * (massB / totalMass);
+  const pushB = overlap * (massA / totalMass);
+  shipA.x += nx * pushA;
+  shipA.y += ny * pushA;
+  shipB.x -= nx * pushB;
+  shipB.y -= ny * pushB;
 
-  // Transferencia de inercia
-  shipA.vx += nx * push * 0.08 / massA;
-  shipA.vy += ny * push * 0.08 / massA;
-  shipB.vx -= nx * push * 0.08 / massB;
-  shipB.vy -= ny * push * 0.08 / massB;
+  // Ajuste de velocidad: colisión perfectamente inelástica a lo largo de la normal.
+  // Esto evita que las naves reboten indefinidamente y elimina el jitter.
+  const relVelX = shipA.vx - shipB.vx;
+  const relVelY = shipA.vy - shipB.vy;
+  const vn = relVelX * nx + relVelY * ny;
 
-  // Ambos reciben daño si el golpe supera el umbral de velocidad, haciéndolo 100% simétrico
+  // Solo aplicamos impulso si se acercan (vn < 0)
+  if (vn < 0) {
+    const invMassSum = 1 / massA + 1 / massB;
+    const impulse = -vn / invMassSum; // sin restitución = 0
+    shipA.vx += (impulse * nx) / massA;
+    shipA.vy += (impulse * ny) / massA;
+    shipB.vx -= (impulse * nx) / massB;
+    shipB.vy -= (impulse * ny) / massB;
+  }
+
+  // Daño por colisión si la velocidad relativa supera el umbral
+  const relSpeed = Math.hypot(shipA.vx - shipB.vx, shipA.vy - shipB.vy);
   const isHurt = relSpeed > SHIP_COLLISION_DAMAGE_SPEED;
 
   return { aHurt: isHurt, bHurt: isHurt };
@@ -294,6 +314,6 @@ export function getWeaponSequenceForClass(shipClass: ShipClass): WeaponKind[] {
 export function cycleWeapon(ship: Ship): WeaponKind {
   const slots = getWeaponSequenceForClass(ship.shipClass);
   const idx = slots.indexOf(ship.weapon);
-  ship.weapon = slots[(idx + 1) % slots.length];
+  ship.weapon = slots[(idx + 1) % slots.length]!;
   return ship.weapon;
 }

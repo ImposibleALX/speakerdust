@@ -1,4 +1,6 @@
-export const SHIP_PLAYER = [
+import type { PixelGrid } from "@speakerdust/shared";
+
+export const SHIP_PLAYER: PixelGrid = [
     [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 8, 1, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 1, 1, 8, 1, 1, 0, 0, 0, 0],
@@ -18,7 +20,7 @@ export const SHIP_PLAYER = [
     [0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0],
 ];
 
-export const SHIP_SCOUT = [
+export const SHIP_SCOUT: PixelGrid = [
     [0, 0, 0, 0, 2, 0, 0, 0, 0],
     [0, 0, 0, 1, 8, 1, 0, 0, 0],
     [0, 0, 4, 1, 2, 1, 4, 0, 0],
@@ -32,7 +34,7 @@ export const SHIP_SCOUT = [
     [0, 0, 0, 0, 3, 0, 0, 0, 0],
 ];
 
-export const SHIP_CRUISER_ENEMY = [
+export const SHIP_CRUISER_ENEMY: PixelGrid = [
     [0, 0, 0, 0, 4, 2, 4, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 4, 4, 8, 4, 4, 0, 0, 0, 0, 0],
     [0, 0, 4, 4, 1, 1, 1, 4, 4, 0, 0, 0, 0],
@@ -49,7 +51,7 @@ export const SHIP_CRUISER_ENEMY = [
     [0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0],
 ];
 
-export const SHIP_CAPITAL = [
+export const SHIP_CAPITAL: PixelGrid = [
     [0, 0, 0, 0, 0, 0, 0, 4, 2, 4, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 4, 4, 8, 4, 4, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 4, 4, 1, 1, 1, 4, 4, 0, 0, 0, 0, 0],
@@ -71,3 +73,9 @@ export const SHIP_CAPITAL = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 
+export const SHIP_BITMAPS: Record<string, PixelGrid> = {
+  player: SHIP_PLAYER,
+  scout: SHIP_SCOUT,
+  cruiser: SHIP_CRUISER_ENEMY,
+  capital: SHIP_CAPITAL,
+};

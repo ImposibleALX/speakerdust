@@ -1,12 +1,13 @@
 import type { GameState } from "../../core/state";
-import type { Bullet, WeaponKind } from "../../core/combat/weaponStats";
+import type { WeaponKind } from "../../core/combat/weaponStats";
 import { EMP_DURATION_TICKS, WEAPON_STATS } from "../../core/combat/weaponStats";
+import { createProjectile, type Projectile } from "../../core/combat/projectiles";
 import { isAngleInArc } from "../../core/combat/patterns";
 import type { EnemyShip, PlayerShip, Ship } from "../../core/ships/shipTypes";
-import { AI_STATS, SHIP_HEAT_LIMIT, collisionRadiusFor } from "../../core/ships/shipStats";
-import { distSq, shortestAngleDelta } from "../../core/math";
+import { AI_STATS, SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
+import { distSq } from "../../core/math";
 import { applyShipDamage, applyWeaponRecoil, resolveShipCollision } from "../physics/playerSystem";
-import { applyBulletSplash, generateEnemyBullets, makeBullet, spawnWave } from "../ai/enemySystem";
+import { applyBulletSplash, generateEnemyBullets, spawnWave } from "../ai/enemySystem";
 
 // 12. Tipado mejorado para incluir ownerController
 interface PendingShot {
@@ -21,7 +22,7 @@ interface PendingShot {
 // 13. Anti-patrón resuelto con unión discriminada para los eventos emitidos
 export type GameEvent =
   | { type: "weapon_charge"; ownerId: string; weapon: WeaponKind; x: number; y: number; angle: number; ticks: number; color: string }
-  | { type: "shockwave"; x: number; y: number; weapon: WeaponKind }
+  | { type: "shockwave"; x: number; y: number; weapon: WeaponKind; ownerId: string }
   | { type: "shield_hit"; playerId: string; reason: "impact" | "weapon" }
   | { type: "player_dead"; playerId: string; x: number; y: number }
   | { type: "explosion"; x: number; y: number; kind: string; shipClass?: string }
@@ -58,7 +59,8 @@ export class CombatSystem {
 
     const targetId = this.findTargetId(player, weapon);
     const state = this.getState();
-    if (targetId && !isAngleInArc(player.angle, Math.atan2(state.ships[targetId].y - player.y, state.ships[targetId].x - player.x), stats.arc)) {
+    const target = targetId ? state.ships[targetId] : undefined;
+    if (target && !isAngleInArc(player.angle, Math.atan2(target.y - player.y, target.x - player.x), stats.arc)) {
       // Preserve existing behavior
     }
 
@@ -75,24 +77,26 @@ export class CombatSystem {
   }
 
   fireEnemyWeapon(enemy: EnemyShip, target: PlayerShip): void {
-    // 3. Fallback seguro por si no existe preferredWeapon en las stats
-    const weapon = AI_STATS[enemy.kind]?.preferredWeapon ?? "basic";
+    // Fallback seguro: si no existe preferredWeapon, usamos naval_cannon (siempre definido)
+    const weapon = AI_STATS[enemy.kind]?.preferredWeapon ?? "naval_cannon";
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
     const angle = Math.atan2(target.y + target.vy * 20 - enemy.y, target.x + target.vx * 20 - enemy.x);
 
+    // Aplicamos el cooldown siempre, cargada o no
+    const cooldownTicks = Math.round(stats.cooldown * (AI_STATS[enemy.kind]?.shootRateMul ?? 1));
+    enemy.shootCooldown = cooldownTicks;
+    enemy.weaponHeat = Math.min(130, enemy.weaponHeat + stats.heat);
+    enemy.weapon = weapon;
+
     if (stats.chargeTicks > 0) {
-      enemy.weapon = weapon;
-      enemy.shootCooldown = Math.round(stats.cooldown * AI_STATS[enemy.kind].shootRateMul);
-      enemy.weaponHeat = Math.min(130, enemy.weaponHeat + stats.heat);
       this.queueShot(enemy.id, "ai", weapon, angle, stats.chargeTicks, target.id);
     } else {
       const state = this.getState();
-      const bullets = generateEnemyBullets(enemy, target);
-      for (const b of bullets) state.bullets[b.id] = b;
+      const projectiles = generateEnemyBullets(enemy, target);
+      for (const p of projectiles) state.projectiles[p.id] = p;
     }
-    // Nota (Puntos 2 y 7): La reducción de cooldowns y empTicks debe procesarse en el sistema de Ticks principal iterando las entidades.
   }
 
   resolvePendingShots(): void {
@@ -109,42 +113,93 @@ export class CombatSystem {
 
   updateBullets(alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
     const state = this.getState();
+    const allAlive: Record<string, Ship> = {};
+    for (const p of alivePlayers) allAlive[p.id] = p;
+    for (const e of aliveEnemies) allAlive[e.id] = e;
 
-    for (const [bid, bullet] of Object.entries(state.bullets)) {
-      if ((bullet.kind === "guided_missile" || bullet.kind === "torpedo") && bullet.targetId) {
-        const target = state.ships[bullet.targetId];
-        // 5. Los misiles guiados pierden el track y siguen recto si el objetivo muere
-        if (target && target.alive) {
-          if (bullet.turnRate) {
-            const desiredAngle = Math.atan2(target.y - bullet.y, target.x - bullet.x);
-            bullet.angle += shortestAngleDelta(bullet.angle, desiredAngle) * bullet.turnRate;
-            bullet.vx = Math.cos(bullet.angle) * WEAPON_STATS[bullet.kind].speed;
-            bullet.vy = Math.sin(bullet.angle) * WEAPON_STATS[bullet.kind].speed;
-          }
-        } else {
-          bullet.turnRate = 0;
-          bullet.targetId = undefined;
-        }
+    for (const [pid, projectile] of Object.entries(state.projectiles)) {
+      if (!projectile.alive) { delete state.projectiles[pid]; continue; }
+
+      const result = projectile.tick(state.ships);
+
+      if (!projectile.alive) delete state.projectiles[pid];
+
+      for (const hit of result.hits) {
+        this.processHit(hit, projectile, pid, state);
       }
 
-      bullet.x += bullet.vx;
-      bullet.y += bullet.vy;
-      bullet.life--;
-
-      if (bullet.detonateAtLife !== undefined && bullet.life <= bullet.detonateAtLife) {
-        this.detonateBullet(bid, bullet, alivePlayers, aliveEnemies);
-        continue;
+      for (const explosion of result.explosions) {
+        this.broadcast({ type: "explosion", x: explosion.x, y: explosion.y, kind: explosion.kind });
       }
+    }
+  }
 
-      if (bullet.life <= 0) {
-        delete state.bullets[bid];
-        continue;
+  private processHit(hit: { targetId: string; damage: number; armorPierce: boolean; statusEffect?: string; splashRadius: number; splashDamage: number; x: number; y: number; kind: WeaponKind; ownerId: string }, projectile: Projectile, pid: string, state: GameState): void {
+    const target = state.ships[hit.targetId];
+    if (!target || !target.alive) return;
+
+    if (hit.statusEffect === "emp") {
+      target.empTicks = Math.max(target.empTicks || 0, EMP_DURATION_TICKS);
+      if (target.controller === "player") {
+        this.broadcast({ type: "emp_hit", playerId: target.id, x: target.x, y: target.y });
       }
+    }
 
-      if (bullet.ownerController === "player") {
-        this.resolvePlayerBulletHits(bid, bullet, aliveEnemies, alivePlayers);
+    const result = applyShipDamage(target, hit.damage, false, hit.armorPierce);
+
+    const owner = state.ships[projectile.ownerId] as PlayerShip | undefined;
+
+    if (target.controller === "ai") {
+      this.applySplashToEnemies(hit, state, target.id, owner);
+    } else if (hit.splashRadius > 0 && target.controller === "player") {
+      this.applySplashToPlayers(hit, state, target.id, owner);
+      this.applySplashToEnemies(hit, state, undefined, owner);
+    }
+
+    if (result.dead) {
+      delete state.ships[target.id];
+      if (owner) {
+        owner.score += target.controller === "ai" ? AI_STATS[(target as EnemyShip).kind]?.score ?? 0 : 100;
+      }
+      if (target.controller === "player") {
+        this.broadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });
       } else {
-        this.resolveEnemyBulletHits(bid, bullet, alivePlayers);
+        this.broadcast({ type: "explosion", x: target.x, y: target.y, kind: (target as EnemyShip).kind, shipClass: target.shipClass });
+      }
+      this.markDirty();
+    } else {
+      if (result.shieldHit && target.controller === "player") {
+        this.broadcast({ type: "shield_hit", playerId: target.id, reason: "weapon" });
+      } else {
+        this.broadcast({ type: "hit", x: target.x, y: target.y, weapon: hit.kind });
+      }
+    }
+  }
+
+  private applySplashToEnemies(hit: { splashRadius: number; splashDamage: number; x: number; y: number; ownerId: string }, state: GameState, excludedEnemyId?: string, owner?: PlayerShip): void {
+    if (hit.splashRadius <= 0) return;
+    const aliveEnemies = Object.values(state.ships).filter((s): s is EnemyShip => s.controller === "ai" && s.alive);
+    const kills = applyBulletSplash(hit.ownerId, hit.x, hit.y, hit.splashDamage, hit.splashRadius, aliveEnemies, excludedEnemyId);
+    for (const k of kills) {
+      if (state.ships[k.enemyId]) delete state.ships[k.enemyId];
+      if (owner) owner.score += k.score;
+      this.broadcast({ type: "explosion", x: k.x, y: k.y, kind: k.kind });
+    }
+    this.broadcast({ type: "splash", x: hit.x, y: hit.y, radius: hit.splashRadius, weapon: "energy_bomb" });
+  }
+
+  private applySplashToPlayers(hit: { splashRadius: number; splashDamage: number; x: number; y: number }, state: GameState, excludedPlayerId?: string, owner?: PlayerShip): void {
+    if (hit.splashRadius <= 0 || !owner) return;
+    for (const player of Object.values(state.ships)) {
+      if (player.controller !== "player" || !player.alive) continue;
+      if (player.id === excludedPlayerId || player.team === owner.team || player.team === "spectator") continue;
+      if (distSq(hit, player) <= hit.splashRadius * hit.splashRadius) {
+        const result = applyShipDamage(player, hit.splashDamage, false, false);
+        if (result.dead) {
+          owner.score += 100;
+          this.broadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
+          delete state.ships[player.id];
+        }
       }
     }
   }
@@ -250,152 +305,10 @@ export class CombatSystem {
     const originY = y + Math.sin(angle) * stats.muzzleOffset;
 
     for (const off of stats.fireOffsets) {
-      const bullet = makeBullet(ownerId, ownerController, originX, originY, angle + off, weapon, targetId);
-      state.bullets[bullet.id] = bullet;
+      const projectile = createProjectile(ownerId, ownerController, originX, originY, angle + off, weapon, targetId);
+      state.projectiles[projectile.id] = projectile;
     }
-    this.broadcast({ type: "shockwave", x: originX, y: originY, weapon });
-  }
-
-  private resolvePlayerBulletHits(bid: string, bullet: Bullet, aliveEnemies: EnemyShip[], alivePlayers: PlayerShip[]): void {
-    const state = this.getState();
-    const owner = state.ships[bullet.ownerId] as PlayerShip | undefined;
-
-    for (const enemy of aliveEnemies) {
-      // 16. Dinámica precisa para hitboxes (se elimina el hardcode _SQ)
-      const hitRadius = collisionRadiusFor(enemy) + bullet.radius;
-      if (distSq(bullet, enemy) >= hitRadius * hitRadius) continue;
-
-      this.applyHitToShip(enemy, bullet, owner, bid, aliveEnemies, alivePlayers);
-      return;
-    }
-
-    if (owner && owner.team !== "spectator") {
-      for (const player of alivePlayers) {
-        if (player.team === owner.team || player.team === "spectator" || player.id === owner.id) continue;
-
-        const hitRadius = collisionRadiusFor(player) + bullet.radius;
-        if (distSq(bullet, player) >= hitRadius * hitRadius) continue;
-
-        this.applyHitToShip(player, bullet, owner, bid, aliveEnemies, alivePlayers);
-        return;
-      }
-    }
-  }
-
-  private resolveEnemyBulletHits(bid: string, bullet: Bullet, alivePlayers: PlayerShip[]): void {
-    for (const player of alivePlayers) {
-      if (player.team === "spectator") continue;
-
-      const hitRadius = collisionRadiusFor(player) + bullet.radius;
-      if (distSq(bullet, player) >= hitRadius * hitRadius) continue;
-
-      this.applyHitToShip(player, bullet, undefined, bid, [], alivePlayers);
-      return;
-    }
-  }
-
-  private applyHitToShip(target: Ship, bullet: Bullet, owner: PlayerShip | undefined, bid: string, aliveEnemies: EnemyShip[], alivePlayers: PlayerShip[]): void {
-    const state = this.getState();
-    delete state.bullets[bid];
-
-    if (bullet.statusEffect === "emp") {
-      target.empTicks = Math.max(target.empTicks || 0, EMP_DURATION_TICKS);
-      if (target.controller === "player") {
-        this.broadcast({ type: "emp_hit", playerId: target.id, x: target.x, y: target.y });
-      }
-    }
-
-    const result = applyShipDamage(target, bullet.damage, false, bullet.kind === "railgun");
-
-    if (target.controller === "ai") {
-      this.handleSplash(bullet, aliveEnemies, target.id, owner);
-    } else if (bullet.splashRadius > 0 && target.controller === "player") {
-      this.handlePvPSplash(bullet, alivePlayers, target.id, owner); // 4. Evitamos redescubrir "alivePlayers" internamente
-      this.handleSplash(bullet, aliveEnemies, undefined, owner);
-    }
-
-    if (result.dead) {
-      delete state.ships[target.id];
-      if (owner) {
-        owner.score += target.controller === "ai" ? this.getEnemyScore(target as EnemyShip) : 100;
-      }
-
-      if (target.controller === "player") {
-        this.broadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });
-      } else {
-        this.broadcast({ type: "explosion", x: target.x, y: target.y, kind: target.kind, shipClass: (target as EnemyShip).shipClass });
-      }
-      this.markDirty();
-    } else {
-      if (result.shieldHit && target.controller === "player") {
-        this.broadcast({ type: "shield_hit", playerId: target.id, reason: "weapon" });
-      } else {
-        this.broadcast({ type: "hit", x: target.x, y: target.y, weapon: bullet.kind });
-      }
-    }
-  }
-
-  private detonateBullet(bid: string, bullet: Bullet, alivePlayers: PlayerShip[], aliveEnemies: EnemyShip[]): void {
-    const state = this.getState();
-    delete state.bullets[bid];
-    this.broadcast({ type: "shockwave", x: bullet.x, y: bullet.y, weapon: bullet.kind });
-
-    // 6. Fórmula splashDmg consistente para toda explosión
-    const splashDmg = Math.max(1, Math.round(bullet.damage * 0.7));
-    const isRailgun = bullet.kind === "railgun";
-
-    if (bullet.ownerController === "player") {
-      const owner = state.ships[bullet.ownerId] as PlayerShip | undefined;
-      this.handleSplash(bullet, aliveEnemies, undefined, owner);
-      this.handlePvPSplash(bullet, alivePlayers, undefined, owner);
-    } else {
-      for (const player of alivePlayers) {
-        if (player.team === "spectator") continue;
-        if (distSq(bullet, player) <= bullet.splashRadius * bullet.splashRadius) {
-          // 10. `ignoreArmor` pasado también en el daño del enemigo
-          const result = applyShipDamage(player, splashDmg, false, isRailgun);
-          if (result.dead) {
-            this.broadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
-            delete state.ships[player.id];
-          }
-        }
-      }
-    }
-  }
-
-  private handleSplash(bullet: Bullet, aliveEnemies: EnemyShip[], excludedEnemyId?: string, owner?: PlayerShip): void {
-    if (bullet.splashRadius <= 0) return;
-    const state = this.getState();
-    const kills = applyBulletSplash(bullet.ownerId, bullet.x, bullet.y, bullet.damage, bullet.splashRadius, aliveEnemies, excludedEnemyId);
-
-    for (const k of kills) {
-      // 11. Evitamos doble eliminación ineficiente si applyBulletSplash ya los procesó
-      if (state.ships[k.enemyId]) delete state.ships[k.enemyId];
-      if (owner) owner.score += k.score;
-      this.broadcast({ type: "explosion", x: k.x, y: k.y, kind: k.kind });
-    }
-    this.broadcast({ type: "splash", x: bullet.x, y: bullet.y, radius: bullet.splashRadius, weapon: bullet.kind });
-  }
-
-  private handlePvPSplash(bullet: Bullet, alivePlayers: PlayerShip[], excludedPlayerId?: string, owner?: PlayerShip): void {
-    if (bullet.splashRadius <= 0 || !owner) return;
-
-    const splashDmg = Math.max(1, Math.round(bullet.damage * 0.7));
-    const isRailgun = bullet.kind === "railgun";
-    const state = this.getState();
-
-    for (const player of alivePlayers) {
-      if (player.id === excludedPlayerId || player.team === owner.team || player.team === "spectator") continue;
-      if (distSq(bullet, player) <= bullet.splashRadius * bullet.splashRadius) {
-        // 10. El daño de salpicadura respeta isRailgun de manera consistente
-        const result = applyShipDamage(player, splashDmg, false, isRailgun);
-        if (result.dead) {
-          owner.score += 100;
-          this.broadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
-          delete state.ships[player.id];
-        }
-      }
-    }
+    this.broadcast({ type: "shockwave", x: originX, y: originY, weapon, ownerId });
   }
 
   private findTargetId(player: PlayerShip, weapon: WeaponKind): string | undefined {
@@ -428,9 +341,5 @@ export class CombatSystem {
 
   private getEnemyShips(): EnemyShip[] {
     return Object.values(this.getState().ships).filter((s): s is EnemyShip => s.controller === "ai");
-  }
-
-  private getEnemyScore(enemy: EnemyShip): number {
-    return AI_STATS[enemy.kind]?.score ?? 0;
   }
 }

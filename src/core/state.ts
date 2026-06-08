@@ -1,10 +1,10 @@
-import type { Bullet } from "./combat/weaponStats";
+import type { Projectile } from "./combat/projectiles";
 import type { ControlPoint, ObjectiveKind, ZoneOwner } from "./world/zones";
 import type { AiKind, Controller, PlayerShip, Ship, ShipClass, Team } from "./ships/shipTypes";
 
 export interface GameState {
   ships: Record<string, Ship>;
-  bullets: Record<string, Bullet>;
+  projectiles: Record<string, Projectile>;
   zones: Record<string, ControlPoint>;
   wave: number;
   tick: number;
@@ -36,21 +36,9 @@ export interface PublicShip {
   team?: Team;
   score?: number;
   isAdmin?: boolean;
+  inputSeq?: number;
   kind?: AiKind;
   aiFrustration?: number;
-}
-
-export interface PublicBullet {
-  id: string;
-  ownerId: string;
-  ownerController: Controller;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  angle: number;
-  kind: string;
-  radius: number;
 }
 
 export interface PublicZone {
@@ -96,26 +84,12 @@ export function toPublicShip(s: Ship): PublicShip {
     pub.team = player.team;
     pub.score = player.score;
     pub.isAdmin = player.isAdmin;
+    pub.inputSeq = player.inputSeq;
   } else {
     pub.kind = s.kind;
     pub.aiFrustration = Math.round(s.aiFrustration);
   }
   return pub;
-}
-
-export function toPublicBullet(b: Bullet): PublicBullet {
-  return {
-    id: b.id,
-    ownerId: b.ownerId,
-    ownerController: b.ownerController,
-    x: Math.round(b.x * 10) / 10,
-    y: Math.round(b.y * 10) / 10,
-    vx: Math.round(b.vx * 10) / 10,
-    vy: Math.round(b.vy * 10) / 10,
-    angle: Math.round(b.angle * 100) / 100,
-    kind: b.kind,
-    radius: b.radius,
-  };
 }
 
 export function toPublicZone(z: ControlPoint): PublicZone {

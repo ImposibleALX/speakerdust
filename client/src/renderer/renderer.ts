@@ -1,0 +1,117 @@
+import type { PixelGrid, WeaponKind } from "@speakerdust/shared";
+import { SHIP_ATTACHMENTS } from "@speakerdust/shared";
+import { drawWeaponOnMount, createWeaponCache } from "./weaponRenderer";
+
+interface ShipCacheEntry {
+  canvas: HTMLCanvasElement;
+  cx: number;
+  cy: number;
+}
+
+export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
+  createWeaponCache();
+
+  const shipCache = new Map<string, ShipCacheEntry>();
+
+  let paletteVersion = 0;
+  const paletteKeys = new Map<string, number>();
+
+  function paletteId(palette: Record<number, string>): number {
+    const str = JSON.stringify(palette);
+    const existing = paletteKeys.get(str);
+    if (existing !== undefined) return existing;
+    const id = ++paletteVersion;
+    paletteKeys.set(str, id);
+    return id;
+  }
+
+  // Genera una cadena rápida y única para el contenido del grid
+  function gridHash(grid: PixelGrid): string {
+    // Convertir cada fila en una cadena numérica separada por comas, y unirlas con punto y coma
+    return grid.map(row => row.join(',')).join(';');
+  }
+
+  function getCachedShip(
+    grid: PixelGrid,
+    palette: Record<number, string>,
+    ps: number
+  ): ShipCacheEntry {
+    const key = `${grid.length}_${grid[0]!.length}_${ps}_${paletteId(palette)}_${gridHash(grid)}`;
+    const existing = shipCache.get(key);
+    if (existing) return existing;
+
+    const rows = grid.length;
+    const cols = grid[0]!.length;
+    const oc = document.createElement("canvas");
+    oc.width = cols * ps;
+    oc.height = rows * ps;
+    const octx = oc.getContext("2d")!;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const v = grid[r]![c]!;
+        if (!v || !palette[v]) continue;
+        octx.fillStyle = palette[v]!;
+        octx.fillRect(c * ps, r * ps, ps, ps);
+      }
+    }
+    const entry: ShipCacheEntry = { canvas: oc, cx: oc.width / 2, cy: oc.height / 2 };
+    shipCache.set(key, entry);
+    return entry;
+  }
+
+  function drawPixelShip(
+    grid: PixelGrid,
+    cx: number,
+    cy: number,
+    angle: number,
+    palette: Record<number, string>,
+    ps: number,
+    shipType?: string,
+    loadout?: Record<string, WeaponKind>,
+    tick?: number
+  ): void {
+    const cached = getCachedShip(grid, palette, ps);
+    ctx.save();
+    ctx.translate(Math.round(cx), Math.round(cy));
+    ctx.rotate(angle + Math.PI / 2);
+    ctx.drawImage(cached.canvas, -Math.floor(cached.cx), -Math.floor(cached.cy));
+    ctx.restore();
+
+    if (shipType && loadout) {
+      renderWeaponAttachments(ctx, shipType, loadout, cx, cy, angle, tick ?? 0);
+    }
+  }
+
+  function renderWeaponAttachments(
+    c: CanvasRenderingContext2D,
+    shipType: string,
+    loadout: Record<string, WeaponKind>,
+    shipX: number,
+    shipY: number,
+    shipAngle: number,
+    tick: number
+  ): void {
+    const attachments = SHIP_ATTACHMENTS[shipType];
+    if (!attachments) return;
+
+    for (const mount of attachments.weapons) {
+      const weaponKind = loadout[mount.id];
+      if (!weaponKind) continue;
+
+      const cos = Math.cos(shipAngle);
+      const sin = Math.sin(shipAngle);
+      const worldX = shipX + mount.x * cos - mount.y * sin;
+      const worldY = shipY + mount.x * sin + mount.y * cos;
+
+      let weaponAngle = shipAngle;
+      if (mount.mountArc === "broadside") {
+        weaponAngle += mount.x < 0 ? -Math.PI / 2 : Math.PI / 2;
+      }
+      drawWeaponOnMount(c, weaponKind, worldX, worldY, weaponAngle, tick);
+    }
+  }
+
+  return {
+    drawPixelShip,
+  };
+}

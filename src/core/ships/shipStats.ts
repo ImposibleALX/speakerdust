@@ -33,7 +33,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     mass: 1.0,
     drag: 0.982,
     maxSpeed: 3.6,
-    thrustForce: 0.22,
+    thrustForce: 0.20,       // ligeramente menos aceleración para evitar abuso de kitting
     strafeThrustForce: 0.08,
     turnRate: 0.085,
     heatCoolRate: 0.65,
@@ -41,7 +41,8 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     shieldRegenDelay: 120,
     shieldRegenInterval: 140,
     collisionRadius: 23,
-    weaponSlots: ["naval_cannon", "autocannon", "torpedo", "railgun"],
+    // Sin railgun para evitar sniper rápido; presión con misiles y torpedo
+    weaponSlots: ["autocannon", "naval_cannon", "guided_missile", "torpedo"],
   },
   destroyer: {
     label: "Destroyer",
@@ -87,7 +88,7 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     maxHp: 11,
     shieldMax: 2,
     armorMax: 4,
-    mass: 2.2,
+    mass: 2.3,              // un poco más pesado para reducir aceleración
     drag: 0.991,
     maxSpeed: 2.15,
     thrustForce: 0.12,
@@ -98,7 +99,8 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     shieldRegenDelay: 180,
     shieldRegenInterval: 220,
     collisionRadius: 37,
-    weaponSlots: ["plasma_broadside", "naval_cannon", "energy_bomb", "railgun"],
+    // Enfoque en área y control, sin perforación de blindaje
+    weaponSlots: ["plasma_broadside", "naval_cannon", "energy_bomb", "emp_launcher"],
   },
   battlecruiser: {
     label: "Battlecruiser",
@@ -106,12 +108,12 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     maxHp: 14,
     shieldMax: 2,
     armorMax: 5,
-    mass: 2.7,
+    mass: 2.8,              // mayor masa para limitar su aceleración
     drag: 0.992,
     maxSpeed: 1.95,
     thrustForce: 0.105,
     strafeThrustForce: 0.015,
-    turnRate: 0.036,
+    turnRate: 0.034,        // giro reducido para contrarrestar su arsenal pesado
     heatCoolRate: 0.45,
     boostRegenRate: 0.32,
     shieldRegenDelay: 200,
@@ -136,7 +138,8 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     shieldRegenDelay: 220,
     shieldRegenInterval: 280,
     collisionRadius: 52,
-    weaponSlots: ["naval_cannon", "railgun", "plasma_broadside", "energy_bomb"],
+    // Sin energy_bomb para no acaparar todas las herramientas de zona
+    weaponSlots: ["railgun", "plasma_broadside", "naval_cannon", "emp_launcher"],
   },
   dreadnought: {
     label: "Dreadnought",
@@ -155,7 +158,8 @@ export const SHIP_CLASS_STATS: Record<ShipClass, ShipClassStats> = {
     shieldRegenDelay: 250,
     shieldRegenInterval: 320,
     collisionRadius: 66,
-    weaponSlots: ["railgun", "plasma_broadside", "naval_cannon", "energy_bomb"],
+    // Control de zona definitivo y apoyo, combinado con perforación
+    weaponSlots: ["energy_bomb", "plasma_broadside", "railgun", "emp_launcher"],
   },
 };
 

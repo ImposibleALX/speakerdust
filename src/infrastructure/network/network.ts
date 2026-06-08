@@ -5,37 +5,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import {
   GameState,
-  toPublicShip, toPublicBullet, toPublicZone,
+  toPublicShip, toPublicZone,
 } from "../../core/state";
+import type { Projectile } from "../../core/combat/projectiles";
 import type { PlayerShip, EnemyShip, Ship } from "../../core/ships/shipTypes";
 import { TICK_MS } from "../../core/world/mapConfig";
 
-// ── Known message types ───────────────────────────────────────────────────────
-const KNOWN_TYPES = new Set([
-  "admin_auth", "admin_reset_all", "admin_kick", "admin_set_wave", "admin_clear_enemies",
-  "set_team", "respawn", "boost", "move", "switch_weapon", "shoot",
-]);
-
-// ── Message validation ────────────────────────────────────────────────────────
-export interface ParsedMessage {
-  type: string;
-  [key: string]: unknown;
-}
-
-/**
- * Parse and validate an incoming WebSocket message.
- * Returns null if the message is malformed or has an unknown type.
- * TypeScript types don't protect at runtime — this does.
- */
-export function validateMessage(raw: ArrayBuffer | string): ParsedMessage | null {
-  if (typeof raw !== "string") return null;
-  let msg: unknown;
-  try { msg = JSON.parse(raw); } catch { return null; }
-  if (!msg || typeof msg !== "object") return null;
-  const m = msg as Record<string, unknown>;
-  if (typeof m.type !== "string" || !KNOWN_TYPES.has(m.type)) return null;
-  return m as ParsedMessage;
-}
+export { validateMessage } from "./validator";
+export type { ParsedMessage } from "./validator";
 
 // ── Payload builders ──────────────────────────────────────────────────────────
 /**
@@ -44,7 +21,7 @@ export function validateMessage(raw: ArrayBuffer | string): ParsedMessage | null
  */
 export function buildInitPayload(
   playerId: string,
-  state:    GameState,
+  state: GameState,
 ): object {
   const ships = buildPublicShips(state);
   const bullets = buildPublicBullets(state);
@@ -59,9 +36,9 @@ export function buildInitPayload(
     tick: state.tick,
     ships,
     // Split for backward-compat with existing clients
-    players:      ships.players,
-    enemies:      ships.enemies,
-    bullets:      bullets.playerBullets,
+    players: ships.players,
+    enemies: ships.enemies,
+    bullets: bullets.playerBullets,
     enemyBullets: bullets.enemyBullets,
     zones,
   };
@@ -69,18 +46,18 @@ export function buildInitPayload(
 
 /** Build the tick payload broadcast every TICK_MS. */
 export function buildTickPayload(state: GameState): object {
-  const ships   = buildPublicShips(state);
+  const ships = buildPublicShips(state);
   const bullets = buildPublicBullets(state);
-  const zones   = buildPublicZones(state);
+  const zones = buildPublicZones(state);
   return {
-    type:         "tick",
-    tick:         state.tick,
-    wave:         state.wave,
+    type: "tick",
+    tick: state.tick,
+    wave: state.wave,
     ships,
     // Split for backward-compat with existing clients
-    players:      ships.players,
-    enemies:      ships.enemies,
-    bullets:      bullets.playerBullets,
+    players: ships.players,
+    enemies: ships.enemies,
+    bullets: bullets.playerBullets,
     enemyBullets: bullets.enemyBullets,
     zones,
   };
@@ -92,18 +69,18 @@ function buildPublicShips(state: GameState) {
   for (const [id, ship] of Object.entries(state.ships)) {
     const pub = toPublicShip(ship);
     if (ship.controller === "player") players[id] = pub;
-    else                               enemies[id] = pub;
+    else enemies[id] = pub;
   }
   return { players, enemies };
 }
 
 function buildPublicBullets(state: GameState) {
-  const playerBullets: Record<string, ReturnType<typeof toPublicBullet>> = {};
-  const enemyBullets:  Record<string, ReturnType<typeof toPublicBullet>> = {};
-  for (const [id, b] of Object.entries(state.bullets)) {
-    const pub = toPublicBullet(b);
-    if (b.ownerController === "player") playerBullets[id] = pub;
-    else                                 enemyBullets[id]  = pub;
+  const playerBullets: Record<string, ReturnType<Projectile["toPublic"]>> = {};
+  const enemyBullets: Record<string, ReturnType<Projectile["toPublic"]>> = {};
+  for (const [id, p] of Object.entries(state.projectiles)) {
+    const pub = p.toPublic();
+    if (p.ownerController === "player") playerBullets[id] = pub;
+    else enemyBullets[id] = pub;
   }
   return { playerBullets, enemyBullets };
 }
@@ -130,12 +107,12 @@ export function broadcast(sockets: WebSocket[], msg: object): void {
 }
 
 // ── Per-socket rate limiter ───────────────────────────────────────────────────
-const RATE_LIMIT_MOVE_MS  = 16;   // max 1 move event per 16 ms (~60 fps)
+const RATE_LIMIT_MOVE_MS = 16;   // max 1 move event per 16 ms (~60 fps)
 const RATE_LIMIT_SHOOT_MS = TICK_MS;
 const RATE_LIMIT_BOOST_MS = 100;
 
 export interface RateLimitState {
-  lastMoveMs:  number;
+  lastMoveMs: number;
   lastShootMs: number;
   lastBoostMs: number;
 }

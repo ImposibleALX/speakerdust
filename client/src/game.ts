@@ -1,10 +1,9 @@
-import { SHIP_PLAYER, SHIP_SCOUT, SHIP_CRUISER_ENEMY, SHIP_CAPITAL } from "./assets/bitmaps.js";
-import { SHIP_ATTACHMENTS } from "./assets/attachments.js";
-import { createPixelShipRenderer } from "./view/renderer.js";
+import { WEAPON_STATS, DEFAULT_LOADOUTS } from "@speakerdust/shared";
+import type { WeaponKind } from "@speakerdust/shared";
+import { SHIP_BITMAPS } from "./assets/bitmaps";
+import { createPixelShipRenderer } from "./renderer/renderer";
+import { generateToken } from "./network/codec";
 
-'use strict';
-
-void SHIP_ATTACHMENTS;
 const IS_LOCAL = location.hostname === "localhost" ||
     location.hostname === "127.0.0.1" ||
     location.hostname === "" ||
@@ -16,81 +15,87 @@ const WORKER_WS = IS_LOCAL
 const ROOM_ID = "sala-1";
 let userInteracted = false;
 
-// ── Constants ──────────────────────────────────────────────
 const CAMERA_SMOOTH = 0.15;
 const SHIELD_RADIUS = 28;
 const PLAYER_TAG_OFFSET = 30;
 const INPUT_RATE = 33;
 const MAX_PARTICLES = 420;
-const MAX_HP = 5;
-const SPECTATOR_CAM_SPEED = 8; // Velocidad de cámara en modo espectador
+const SPECTATOR_CAM_SPEED = 8;
 
-const COOLDOWN_TABLE = Object.freeze({
-    naval_cannon: 1782,
-    autocannon: 396,
-    plasma_broadside: 2706,
-    railgun: 3432,
-    torpedo: 3168,
-    guided_missile: 2376,
-    energy_bomb: 2970,
-    emp_launcher: 2508,
-});
+const COOLDOWN_TABLE: Record<WeaponKind, number> = {} as Record<WeaponKind, number>;
+for (const [kind, stats] of Object.entries(WEAPON_STATS)) {
+    COOLDOWN_TABLE[kind as WeaponKind] = stats.cooldown * 33;
+}
 
-// ── Quick Chat Messages ─────────────────────────────────
 const QUICK_CHAT = [
-    "¡Atacad!",
-    "Defended la base",
-    "Necesito apoyo",
-    "Retirada",
-    "¡Bien hecho!",
-    "Cuidado con el flanco",
-    "Esperad mi señal",
-    "Voy a por el objetivo",
-    "¡Gran trabajo!",
+    "¡Atacad!", "Defended la base", "Necesito apoyo", "Retirada",
+    "¡Bien hecho!", "Cuidado con el flanco", "Esperad mi señal",
+    "Voy a por el objetivo", "¡Gran trabajo!",
 ];
 
-// ── Canvas ─────────────────────────────────────────────
-const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("gameCanvas"));
-const ctx = canvas.getContext("2d");
-const { drawPixelShip } = createPixelShipRenderer(ctx);
+function getCanvas(id: string): HTMLCanvasElement {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`Element #${id} not found in DOM`);
+    if (!(el instanceof HTMLCanvasElement)) throw new Error(`Element #${id} is not a <canvas>`);
+    return el;
+}
+const canvas = getCanvas("gameCanvas");
+const ctx = canvas.getContext("2d")!;
 let WORLD_W = 1200, WORLD_H = 800;
 
-// ── HUD elements ─────────────────────────────────────────
-const $ = (id) => document.getElementById(id);
-const hudEl = $("hud");
-const statusBarEl = $("status-bar");
-const weaponDisp = $("weapon-display");
-const shieldDisp = $("shield-display");
-const scoreDisp = $("score");
-const waveNumDisp = $("wave-num");
-const playerCountDisp = $("player-count");
-const connStatusEl = $("connection-status");
-const overlay = $("screen-overlay");
-const overlayScore = $("overlay-score");
-const restartBtn = $("restart-btn");
-const hpDisp = $("hp-display");
-const armorDisp = $("armor-display");
-const energyDisp = $("energy-display");
-const heatDisp = $("heat-display");
-const objectiveDisp = $("objective-display");
-const teamBadge = $("team-badge");
+const $ = (id: string) => document.getElementById(id);
+const hudEl = $("hud")!;
+const statusBarEl = $("status-bar")!;
+const weaponDisp = $("weapon-display")!;
+const shieldDisp = $("shield-display")!;
+const scoreDisp = $("score")!;
+const waveNumDisp = $("wave-num")!;
+const playerCountDisp = $("player-count")!;
+const connStatusEl = $("connection-status")!;
+const overlay = $("screen-overlay")!;
+const overlayScore = $("overlay-score")!;
+const restartBtn = $("restart-btn") as HTMLButtonElement;
+const hpDisp = $("hp-display")!;
+const energyDisp = $("energy-display")!;
+const heatDisp = $("heat-display")!;
+const objectiveDisp = $("objective-display")!;
+const teamBadge = $("team-badge")!;
+const adminPanel = $("admin-panel")!;
+const adminClose = $("admin-close")!;
+const adminAuthForm = $("admin-auth-form") as HTMLFormElement;
+const adminKeyInput = $("admin-key-input") as HTMLInputElement;
+const adminAuthStatus = $("admin-auth-status")!;
+const adminControls = $("admin-controls")!;
+const adminResetAllBtn = $("admin-reset-all-btn")!;
+const adminClearEnemiesBtn = $("admin-clear-enemies-btn")!;
+const adminWaveInput = $("admin-wave-input") as HTMLInputElement;
+const adminSetWaveBtn = $("admin-set-wave-btn")!;
+const adminJoinRed = $("admin-join-red")!;
+const adminJoinBlue = $("admin-join-blue")!;
+const adminGodmodeBtn = $("admin-godmode-btn")!;
+const adminHealBtn = $("admin-heal-btn")!;
+const adminResetDataBtn = $("admin-reset-data-btn")!;
+const adminPlayerList = $("admin-player-list")!;
 
-// ── Visual Effects State ─────────────────────────────────
 let shakeX = 0, shakeY = 0, shakeDuration = 0;
 const dmgOverlay = document.createElement("div");
 dmgOverlay.id = "damage-overlay";
-dmgOverlay.style = "pointer-events:none;position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(transparent 60%, rgba(255,0,0,0.5));opacity:0;transition:opacity 0.1s;z-index:100;";
+dmgOverlay.style.cssText = "pointer-events:none;position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(transparent 60%, rgba(255,0,0,0.5));opacity:0;transition:opacity 0.1s;z-index:100;";
 document.body.appendChild(dmgOverlay);
 
-function addScreenShake(intensity, duration) {
-    shakeDuration = Math.max(shakeDuration, duration);
-    shakeX = Math.max(shakeX, intensity);
-    shakeY = Math.max(shakeY, intensity);
+let lastShakeTime = 0;
+function addScreenShake(intensity: number, duration: number): void {
+    const now = performance.now();
+    if (now - lastShakeTime < 800) return;
+    lastShakeTime = now;
+    shakeDuration = Math.min(duration, 4);
+    shakeX = Math.min(intensity, 1.5);
+    shakeY = Math.min(intensity, 1.5);
 }
 
 let lastDamageFlash = 0;
-let dmgFlashTimeout = null;
-function flashDamageOverlay() {
+let dmgFlashTimeout: ReturnType<typeof setTimeout> | null = null;
+function flashDamageOverlay(): void {
     const now = performance.now();
     if (now - lastDamageFlash < 200) return;
     lastDamageFlash = now;
@@ -99,34 +104,16 @@ function flashDamageOverlay() {
     dmgFlashTimeout = setTimeout(() => { dmgOverlay.style.opacity = "0"; }, 80);
 }
 
-// Player ship damage flash
 let playerDamageFlashUntil = 0;
-function triggerPlayerDamageFlash() {
+function triggerPlayerDamageFlash(): void {
     playerDamageFlashUntil = performance.now() + 120;
 }
 
-// ── Admin panel elements ──────────────────────────────────
-const adminPanel = $("admin-panel");
-const adminClose = $("admin-close");
-const adminAuthForm = $("admin-auth-form");
-const adminKeyInput = $("admin-key-input");
-const adminAuthBtn = $("admin-auth-btn");
-const adminAuthStatus = $("admin-auth-status");
-const adminControls = $("admin-controls");
-const adminResetAllBtn = $("admin-reset-all-btn");
-const adminClearEnemiesBtn = $("admin-clear-enemies-btn");
-const adminWaveInput = $("admin-wave-input");
-const adminSetWaveBtn = $("admin-set-wave-btn");
-const adminJoinRed = $("admin-join-red");
-const adminJoinBlue = $("admin-join-blue");
-const adminPlayerList = $("admin-player-list");
+let audioCtx: AudioContext | null = null;
+let masterCompressor: DynamicsCompressorNode | null = null;
+let cachedNoiseBuffer: AudioBuffer | null = null;
 
-// ── Audio System ─────────────────────────────────────────
-let audioCtx = null;
-let masterCompressor = null;
-let cachedNoiseBuffer = null;
-
-function getNoiseBuffer(ctxAudio) {
+function getNoiseBuffer(ctxAudio: AudioContext): AudioBuffer {
     if (cachedNoiseBuffer) return cachedNoiseBuffer;
     const length = ctxAudio.sampleRate * 2;
     const buffer = ctxAudio.createBuffer(1, length, ctxAudio.sampleRate);
@@ -136,9 +123,9 @@ function getNoiseBuffer(ctxAudio) {
     return buffer;
 }
 
-function ensureAudio() {
+function ensureAudio(): AudioContext | null {
     if (!audioCtx) {
-        const Ctor = window.AudioContext || window.webkitAudioContext;
+        const Ctor = window.AudioContext || (window as any).webkitAudioContext;
         if (!Ctor) return null;
         audioCtx = new Ctor();
         masterCompressor = audioCtx.createDynamicsCompressor();
@@ -154,7 +141,7 @@ function ensureAudio() {
     return audioCtx;
 }
 
-function playTone(freq, duration, type = "sine", gain = 0.06, sweepTo = null) {
+function playTone(freq: number, duration: number, type: OscillatorType = "sine", gain = 0.06, sweepTo: number | null = null): void {
     const ctxAudio = ensureAudio();
     if (!ctxAudio || !masterCompressor) return;
     const osc = ctxAudio.createOscillator();
@@ -172,7 +159,7 @@ function playTone(freq, duration, type = "sine", gain = 0.06, sweepTo = null) {
     osc.stop(ctxAudio.currentTime + duration);
 }
 
-function playNoise(duration, gain = 0.06) {
+function playNoise(duration: number, gain = 0.06): void {
     const ctxAudio = ensureAudio();
     if (!ctxAudio || !masterCompressor) return;
     const source = ctxAudio.createBufferSource();
@@ -190,14 +177,13 @@ function playNoise(duration, gain = 0.06) {
     source.stop(ctxAudio.currentTime + duration);
 }
 
-// ── Haptic Feedback ──────────────────────────────────────
-function triggerHaptic(duration = 50, intensity = 0.5) {
+function triggerHaptic(duration = 50, intensity = 0.5): void {
     try {
         const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
         for (const gp of gamepads) {
             if (gp && gp.vibrationActuator) {
-                gp.vibrationActuator.playEffect("dual-rumble", {
-                    duration: duration,
+                (gp.vibrationActuator as any).playEffect("dual-rumble", {
+                    duration,
                     strongMagnitude: intensity,
                     weakMagnitude: intensity * 0.5,
                 }).catch(() => { });
@@ -209,8 +195,7 @@ function triggerHaptic(duration = 50, intensity = 0.5) {
     }
 }
 
-// ── True Fullscreen Canvas ───────────────────────────────
-function resizeCanvas() {
+function resizeCanvas(): void {
     const hudH = hudEl?.offsetHeight ?? 0;
     const statH = statusBarEl?.offsetHeight ?? 0;
     const availW = window.innerWidth;
@@ -234,75 +219,24 @@ function resizeCanvas() {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
-// ════════════════════════════════════════════════════════
-//  PIXEL-ART RENDERER
-//  0=transparent 1=hull 2=bridge 3=engine 4=weapon
-//  5=trim 6=panel 7=wing-accent 8=window
-// ════════════════════════════════════════════════════════
-// ── Palettes ──────────────────────────────────────────────
-function makePlayerPalette(hsl, team) {
-    const [h, s, l] = hsl;
-    const tintH = team === "red" ? 0 : team === "blue" ? 210 : h;
-    const useH = team ? tintH : h;
-    return {
-        1: `hsl(${useH},${s}%,${l}%)`,
-        2: `hsl(${useH},${s - 10}%,${Math.min(l + 20, 90)}%)`,
-        3: `hsl(${(useH + 200) % 360},${Math.max(s - 30, 30)}%,${Math.max(l - 20, 30)}%)`,
-        4: `hsl(${(useH + 40) % 360},${s}%,${Math.max(l - 15, 15)}%)`,
-        5: `hsl(${useH},${Math.max(s - 20, 20)}%,${Math.min(l + 10, 80)}%)`,
-        6: `hsl(${useH},${s}%,${Math.max(l - 35, 10)}%)`,
-        7: `hsl(${(useH + 20) % 360},${Math.max(s - 5, 40)}%,${Math.min(l + 5, 85)}%)`,
-        8: "#a0eeff",
-    };
-}
+const { drawPixelShip } = createPixelShipRenderer(ctx);
 
-const PAL_SCOUT = Object.freeze({
-    1: "#b50035", 2: "#ff1c51", 3: "#ffaa00", 4: "#e6004b",
-    5: "#ff7093", 6: "#4a0016", 7: "#ff2a5f", 8: "#a0eeff",
-});
-const PAL_CRUISER_ENEMY = Object.freeze({
-    1: "#4a0080", 2: "#8a00cc", 3: "#ffaa00", 4: "#aa00ff",
-    5: "#ba66ff", 6: "#1a002b", 7: "#d488ff", 8: "#a0eeff",
-});
-const PAL_CAPITAL = Object.freeze({
-    1: "#12204a", 2: "#2d4bb5", 3: "#ffaa00", 4: "#e62a4a",
-    5: "#4272f5", 6: "#070c21", 7: "#5788fa", 8: "#a0eeff",
-});
-const PAL_FLASH_RED = Object.freeze({
-    1: "#ff0000", 2: "#ff5555", 3: "#ffaa00", 4: "#ff0000",
-    5: "#aa0000", 6: "#550000", 7: "#ff0000", 8: "#ffffff",
-});
+const NAVAL_WEAPON_COLORS: Record<WeaponKind, string> = {
+    naval_cannon: "#ffd36a", autocannon: "#a8ff78", plasma_broadside: "#d86bff",
+    railgun: "#7df9ff", torpedo: "#ff9030", guided_missile: "#ff6a3d",
+    energy_bomb: "#ffe66d", emp_launcher: "#66ccff",
+};
+const NAVAL_WEAPON_ICONS: Record<WeaponKind, string> = {
+    naval_cannon: "NAVAL CANNON", autocannon: "AUTOCANNON", plasma_broadside: "PLASMA BROADSIDE",
+    railgun: "RAILGUN", torpedo: "TORPEDO", guided_missile: "GUIDED MISSILE",
+    energy_bomb: "ENERGY BOMB", emp_launcher: "EMP LAUNCHER",
+};
 
-// ════════════════════════════════════════════════════════
-//  WEAPONS HUD DATA
-// ════════════════════════════════════════════════════════
-const NAVAL_WEAPON_COLORS = Object.freeze({
-    naval_cannon: "#ffd36a",
-    autocannon: "#a8ff78",
-    plasma_broadside: "#d86bff",
-    railgun: "#7df9ff",
-    torpedo: "#ff9030",
-    guided_missile: "#ff6a3d",
-    energy_bomb: "#ffe66d",
-    emp_launcher: "#66ccff",
-});
-const NAVAL_WEAPON_ICONS = Object.freeze({
-    naval_cannon: "NAVAL CANNON",
-    autocannon: "AUTOCANNON",
-    plasma_broadside: "PLASMA BROADSIDE",
-    railgun: "RAILGUN",
-    torpedo: "TORPEDO",
-    guided_missile: "GUIDED MISSILE",
-    energy_bomb: "ENERGY BOMB",
-    emp_launcher: "EMP LAUNCHER",
-});
-
-// ── DOM Helpers ──────────────────────────────────────────
-function setDiff(el, text) {
+function setDiff(el: HTMLElement | null, text: string): void {
     if (el && el.textContent !== text) el.textContent = text;
 }
 
-function renderMeter(value, max, width, filledChar, emptyChar) {
+function renderMeter(value: number, max: number, width: number, filledChar: string, emptyChar: string): string {
     const safeValue = Number.isFinite(value) ? value : 0;
     const safeMax = max > 0 ? max : 1;
     const clamped = Math.max(0, Math.min(safeMax, safeValue));
@@ -310,7 +244,7 @@ function renderMeter(value, max, width, filledChar, emptyChar) {
     return filledChar.repeat(filled) + emptyChar.repeat(Math.max(0, width - filled));
 }
 
-function drawWeaponHUD(weapon) {
+function drawWeaponHUD(weapon: WeaponKind): void {
     if (!weaponDisp) return;
     const color = NAVAL_WEAPON_COLORS[weapon] || "#fff";
     setDiff(weaponDisp, NAVAL_WEAPON_ICONS[weapon] || weapon || "");
@@ -318,40 +252,40 @@ function drawWeaponHUD(weapon) {
     weaponDisp.style.textShadow = `0 0 10px ${color}`;
 }
 
-function drawShieldHUD(shield, shieldMax) {
+function drawShieldHUD(shield: number, shieldMax: number): void {
     if (!shieldDisp) return;
     const sMax = shieldMax || 3;
     setDiff(shieldDisp, "◈".repeat(Math.max(0, shield)) + "◇".repeat(Math.max(0, sMax - shield)));
     shieldDisp.style.color = shield > 1 ? "#4af" : shield === 1 ? "#fa0" : "#f44";
 }
 
-function drawHpHUD(hp, maxHp) {
+function drawHpHUD(hp: number, maxHp: number): void {
     if (!hpDisp) return;
-    const currentMax = maxHp > 0 ? maxHp : MAX_HP;
+    const currentMax = maxHp > 0 ? maxHp : 5;
     setDiff(hpDisp, "◈".repeat(Math.max(0, hp)) + "◇".repeat(Math.max(0, currentMax - hp)));
     hpDisp.style.color = hp > (currentMax * 0.4) ? "#a8ff78" : hp > (currentMax * 0.2) ? "#ffd36a" : "#ff6a7a";
 }
 
-function drawEnergyHUD(energy) {
+function drawEnergyHUD(energy: number): void {
     if (energyDisp) setDiff(energyDisp, renderMeter(energy, 100, 10, "█", "░"));
 }
 
-function drawHeatHUD(heat) {
+function drawHeatHUD(heat: number): void {
     if (!heatDisp) return;
     setDiff(heatDisp, renderMeter(heat, 100, 10, "█", "░"));
     heatDisp.style.color = heat > 75 ? "#ff6a7a" : heat > 45 ? "#ffb35a" : "#ffd36a";
 }
 
-function drawObjectiveHUD(zones) {
+function drawObjectiveHUD(zones: Record<string, any>): void {
     if (!objectiveDisp) return;
     const list = Object.values(zones || {});
     if (!list.length) {
         setDiff(objectiveDisp, "DOMINIO 0/0");
         return;
     }
-    const playersOwned = list.filter(z => z.owner === "red" || z.owner === "blue").length;
-    const maxProg = (z) => Math.max(z.redProgress || 0, z.blueProgress || 0, z.enemyProgress || 0);
-    const focus = list.reduce((best, z) => maxProg(z) > maxProg(best) ? z : best, list[0]);
+    const playersOwned = list.filter((z: any) => z.owner === "red" || z.owner === "blue").length;
+    const maxProg = (z: any) => Math.max(z.redProgress || 0, z.blueProgress || 0, z.enemyProgress || 0);
+    const focus = list.reduce((best: any, z: any) => maxProg(z) > maxProg(best) ? z : best, list[0]);
     const pct = Math.round(maxProg(focus));
     let ownerText = "NEUTRAL";
     if (focus.owner === myTeam) ownerText = "ALLY";
@@ -360,60 +294,52 @@ function drawObjectiveHUD(zones) {
     setDiff(objectiveDisp, `CONTROL ${playersOwned}/${list.length} • ${focus.label || "ZONE"} ${pct}% ${ownerText}`);
 }
 
-function updateTeamBadge(team) {
+function updateTeamBadge(team: string): void {
     if (!teamBadge) return;
     setDiff(teamBadge, team === "red" ? "◆ RED TEAM" : team === "blue" ? "◆ BLUE TEAM" : "◇ SPECTATOR");
     teamBadge.className = team === "red" ? "team-badge-red" : "team-badge-blue";
 }
 
-// ── Audio sounds ──────────────────────────────────────────
-function playWeaponSound(weapon) {
+function playWeaponSound(weapon: string): void {
     switch (weapon) {
-        case "naval_cannon":
-        case "railgun":
-            playTone(880, 0.04, "square", 0.035, 1360);
-            break;
-        case "plasma_broadside":
-        case "autocannon":
+        case "naval_cannon": case "railgun":
+            playTone(880, 0.04, "square", 0.035, 1360); break;
+        case "plasma_broadside": case "autocannon":
             playTone(620, 0.03, "triangle", 0.028, 740);
-            playTone(820, 0.04, "triangle", 0.025, 1040);
-            break;
-        case "torpedo":
-        case "guided_missile":
+            playTone(820, 0.04, "triangle", 0.025, 1040); break;
+        case "torpedo": case "guided_missile":
             playTone(180, 0.12, "sawtooth", 0.04, 90);
-            playTone(70, 0.16, "triangle", 0.03, 40);
-            break;
-        default:
-            playTone(880, 0.04, "square", 0.035, 1360);
+            playTone(70, 0.16, "triangle", 0.03, 40); break;
+        default: playTone(880, 0.04, "square", 0.035, 1360);
     }
 }
 
-function playImpactSound(strong = false) {
+function playImpactSound(strong = false): void {
     playNoise(strong ? 0.06 : 0.03, strong ? 0.045 : 0.02);
     playTone(strong ? 260 : 420, strong ? 0.05 : 0.03, "square", strong ? 0.03 : 0.015, strong ? 140 : 260);
 }
 
-function playExplosionSound() {
+function playExplosionSound(): void {
     playNoise(0.16, 0.08);
     playTone(72, 0.18, "sawtooth", 0.04, 35);
 }
 
-function playObjectiveSound() {
+function playObjectiveSound(): void {
     playTone(660, 0.05, "triangle", 0.03, 880);
     playTone(990, 0.08, "triangle", 0.03, 1320);
 }
 
-// ════════════════════════════════════════════════════════
-//  BACKGROUND
-// ════════════════════════════════════════════════════════
-let stars = [];
+interface Star {
+    x: number; y: number; size: number; speed: number;
+    alpha: number; tw: number; tws: number;
+}
+let stars: Star[] = [];
 const nebOffscreen = document.createElement("canvas");
 let nebBuilt = false;
 
-function generateStars() {
+function generateStars(): void {
     stars = Array.from({ length: 280 }, () => ({
-        x: Math.random() * WORLD_W,
-        y: Math.random() * WORLD_H,
+        x: Math.random() * WORLD_W, y: Math.random() * WORLD_H,
         size: Math.random() < 0.06 ? 2 : 1,
         speed: Math.random() * 0.45 + 0.05,
         alpha: Math.random() * 0.6 + 0.3,
@@ -422,16 +348,14 @@ function generateStars() {
     }));
 }
 
-function updateStars() {
-    for (const s of stars) {
-        s.tw += s.tws;
-    }
+function updateStars(): void {
+    for (const s of stars) s.tw += s.tws;
 }
 
-function buildNebulas() {
+function buildNebulas(): void {
     nebOffscreen.width = WORLD_W;
     nebOffscreen.height = WORLD_H;
-    const nc = nebOffscreen.getContext("2d");
+    const nc = nebOffscreen.getContext("2d")!;
     const defs = [
         { x: 200, y: 150, r: 240, h: 195, a: 0.08 },
         { x: 950, y: 620, r: 280, h: 270, a: 0.07 },
@@ -450,7 +374,7 @@ function buildNebulas() {
     nebBuilt = true;
 }
 
-function drawBackground() {
+function drawBackground(): void {
     const dpr = window.devicePixelRatio || 1;
     const availW = canvas.width / dpr;
     const availH = canvas.height / dpr;
@@ -464,7 +388,6 @@ function drawBackground() {
     const startY = Math.floor(cameraY / 48) * 48;
     const endX = cameraX + availW + 48;
     const endY = cameraY + availH + 48;
-
     for (let x = startX; x < endX; x += 48) {
         ctx.beginPath(); ctx.moveTo(x, cameraY); ctx.lineTo(x, endY); ctx.stroke();
     }
@@ -472,14 +395,11 @@ function drawBackground() {
         ctx.beginPath(); ctx.moveTo(cameraX, y); ctx.lineTo(endX, y); ctx.stroke();
     }
 
-    // Estrellas infinitas: envolvemos px/py en un área virtual mayor que el monitor (e.g. 2000px)
     const wrapS = 2000;
     for (const s of stars) {
         let px = ((s.x - cameraX * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
         let py = ((s.y - cameraY * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
-
-        if (px > availW || py > availH) continue;
-
+        if (px < 0 || px > availW || py < 0 || py > availH) continue;
         ctx.globalAlpha = s.alpha * (0.6 + 0.4 * Math.sin(s.tw));
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(Math.round(cameraX + px), Math.round(cameraY + py), s.size, s.size);
@@ -487,13 +407,12 @@ function drawBackground() {
     ctx.globalAlpha = 1;
 }
 
-function drawObjectives(zones) {
+function drawObjectives(zones: Record<string, any>): void {
     for (const id in zones) {
         const zone = zones[id];
         const ownerColor = zone.owner === "red" ? "#ff3355"
             : zone.owner === "blue" ? "#3399ff"
-                : zone.owner === "enemies" ? "#ff4a88"
-                    : "#7f8aa8";
+                : zone.owner === "enemies" ? "#ff4a88" : "#7f8aa8";
         const alpha = zone.owner === "neutral" ? 0.12 : 0.2;
         const fill = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
         fill.addColorStop(0, `rgba(255,255,255,${alpha * 0.9})`);
@@ -515,7 +434,6 @@ function drawObjectives(zones) {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius * 0.62, 0, Math.PI * 2); ctx.stroke();
 
-        // Progress ring based on stored team progress values
         const prog = myTeam === "red" ? zone.redProgress : zone.blueProgress;
         if (prog > 0) {
             ctx.save();
@@ -541,13 +459,13 @@ function drawObjectives(zones) {
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  PARTICLES
-// ════════════════════════════════════════════════════════
-let particles = [];
+interface Particle {
+    x: number; y: number; vx: number; vy: number;
+    sz: number; color: string; life: number; maxLife: number;
+}
+let particles: Particle[] = [];
 
-// Fix: Escala multiplicada correctamente para naves pesadas
-function explode(x, y, colors, n, spd = 4.5, scale = 1) {
+function explode(x: number, y: number, colors: string[], n: number, spd = 4.5, scale = 1): void {
     const effectiveN = Math.round(n * scale);
     const effectiveSpd = spd * scale;
     for (let i = 0; i < effectiveN; i++) {
@@ -555,28 +473,24 @@ function explode(x, y, colors, n, spd = 4.5, scale = 1) {
         const s = Math.random() * effectiveSpd + 0.8;
         particles.push({
             x, y,
-            vx: Math.cos(a) * s,
-            vy: Math.sin(a) * s,
+            vx: Math.cos(a) * s, vy: Math.sin(a) * s,
             sz: Math.floor(Math.random() * 5 + 2),
-            color: colors[Math.floor(Math.random() * colors.length)],
-            life: 30 + Math.random() * 15,
-            maxLife: 45,
+            color: colors[Math.floor(Math.random() * colors.length)] ?? "#fff",
+            life: 30 + Math.random() * 15, maxLife: 45,
         });
     }
 }
 
-function tickParticles() {
+function tickParticles(): void {
     particles = particles.filter(p => p.life > 0);
     for (const p of particles) {
-        p.x += p.vx;
-        p.y += p.vy;
-        p.vx *= 0.91;
-        p.vy *= 0.91;
+        p.x += p.vx; p.y += p.vy;
+        p.vx *= 0.91; p.vy *= 0.91;
         p.life--;
     }
 }
 
-function drawParticles() {
+function drawParticles(): void {
     for (const p of particles) {
         ctx.globalAlpha = p.life / p.maxLife;
         ctx.fillStyle = p.color;
@@ -586,22 +500,15 @@ function drawParticles() {
     ctx.globalAlpha = 1;
 }
 
-// ════════════════════════════════════════════════════════
-//  DRAW – BULLETS
-// ════════════════════════════════════════════════════════
-function drawBullets(bullets) {
+function drawBullets(bullets: Record<string, any>): void {
     for (const id in bullets) {
         const b = bullets[id];
         const margin = 150;
         const dpr = window.devicePixelRatio || 1;
         const viewW = canvas.width / dpr;
         const viewH = canvas.height / dpr;
-
-        // Frustum Culling dinámico de balas
         if (b.x < cameraX - margin || b.y < cameraY - margin ||
-            b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) {
-            continue;
-        }
+            b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) continue;
 
         const a = b.angle !== undefined ? b.angle : Math.atan2(b.vy, b.vx);
         const bx = Math.round(b.x);
@@ -665,13 +572,48 @@ function drawBullets(bullets) {
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  DRAW – ENEMIES & ENGINE TRAILS
-// ════════════════════════════════════════════════════════
-function drawEngineTrail(x, y, angle, isHeavy, isMedium, color) {
-    const mx = -Math.cos(angle);
-    const my = -Math.sin(angle);
+function parseHSL(hsl: string): number[] {
+    const m = hsl.match(/[\d.]+/g);
+    return m ? m.map(Number) : [180, 80, 60];
+}
 
+function makePlayerPalette(hsl: number[], team: string): Record<number, string> {
+    const [h = 180, s = 80, l = 60] = hsl;
+    const tintH = team === "red" ? 0 : team === "blue" ? 210 : h;
+    const useH = team ? tintH : h;
+    return {
+        1: `hsl(${useH},${s}%,${l}%)`,
+        2: `hsl(${useH},${s - 10}%,${Math.min(l + 20, 90)}%)`,
+        3: `hsl(${(useH + 200) % 360},${Math.max(s - 30, 30)}%,${Math.max(l - 20, 30)}%)`,
+        4: `hsl(${(useH + 40) % 360},${s}%,${Math.max(l - 15, 15)}%)`,
+        5: `hsl(${useH},${Math.max(s - 20, 20)}%,${Math.min(l + 10, 80)}%)`,
+        6: `hsl(${useH},${s}%,${Math.max(l - 35, 10)}%)`,
+        7: `hsl(${(useH + 20) % 360},${Math.max(s - 5, 40)}%,${Math.min(l + 5, 85)}%)`,
+        8: "#a0eeff",
+    };
+}
+
+const PAL_SCOUT: Record<number, string> = Object.freeze({
+    1: "#b50035", 2: "#ff1c51", 3: "#ffaa00", 4: "#e6004b",
+    5: "#ff7093", 6: "#4a0016", 7: "#ff2a5f", 8: "#a0eeff",
+});
+const PAL_CRUISER_ENEMY: Record<number, string> = Object.freeze({
+    1: "#4a0080", 2: "#8a00cc", 3: "#ffaa00", 4: "#aa00ff",
+    5: "#ba66ff", 6: "#1a002b", 7: "#d488ff", 8: "#a0eeff",
+});
+const PAL_CAPITAL: Record<number, string> = Object.freeze({
+    1: "#12204a", 2: "#2d4bb5", 3: "#ffaa00", 4: "#e62a4a",
+    5: "#4272f5", 6: "#070c21", 7: "#5788fa", 8: "#a0eeff",
+});
+const PAL_FLASH_RED: Record<number, string> = Object.freeze({
+    1: "#ff0000", 2: "#ff5555", 3: "#ffaa00", 4: "#ff0000",
+    5: "#aa0000", 6: "#550000", 7: "#ff0000", 8: "#ffffff",
+});
+
+function drawEngineTrail(x: number, y: number, angle: number, isHeavy: boolean, isMedium: boolean, color: string, reverse = false): void {
+    const dir = reverse ? 1 : -1;
+    const mx = dir * -Math.cos(angle);
+    const my = dir * -Math.sin(angle);
     const dist = isHeavy ? 32 : isMedium ? 20 : 10;
     const spread = isHeavy ? 12 : isMedium ? 6 : 0;
 
@@ -682,12 +624,11 @@ function drawEngineTrail(x, y, angle, isHeavy, isMedium, color) {
     for (let i = 0; i < len; i++) {
         const t = i / len;
         const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
-
         const baseX = x + mx * (dist + i * 5 + pulse);
         const baseY = y + my * (dist + i * 5 + pulse);
-        const jitter = (Math.random() - 0.5) * (i * 1.5);
+        const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.6);
 
-        const renderTrailPoint = (offsetX, offsetY) => {
+        const renderTrailPoint = (offsetX: number, offsetY: number) => {
             const ex = baseX + offsetX + jitter;
             const ey = baseY + offsetY + jitter;
             ctx.globalAlpha = (1 - t) * 0.7;
@@ -710,43 +651,50 @@ function drawEngineTrail(x, y, angle, isHeavy, isMedium, color) {
     ctx.restore();
 }
 
-function drawEnemies(enemies) {
+function drawEnemies(enemies: Record<string, any>): void {
     for (const id in enemies) {
         const e = enemies[id];
         const ps = 3;
         const kind = e.kind || "corvette";
+
         const isHeavy = kind === "battleship" || kind === "dreadnought";
-        const isMedium = kind === "frigate" || kind === "cruiser";
+        const isMedium = kind === "destroyer" || kind === "frigate" || kind === "cruiser";
+
         const glowC = isHeavy ? "#4466ff" : isMedium ? "#cc00ff" : "#ff2060";
-        const ship = isHeavy ? SHIP_CAPITAL : isMedium ? SHIP_CRUISER_ENEMY : SHIP_SCOUT;
-        const pal = isHeavy ? PAL_CAPITAL : isMedium ? PAL_CRUISER_ENEMY : PAL_SCOUT;
+
+        const grid = isHeavy
+            ? SHIP_BITMAPS.capital!
+            : isMedium
+                ? SHIP_BITMAPS.cruiser!
+                : SHIP_BITMAPS.scout!;
+
+        const pal = isHeavy
+            ? PAL_CAPITAL
+            : isMedium
+                ? PAL_CRUISER_ENEMY
+                : PAL_SCOUT;
 
         drawEngineTrail(e.x, e.y, e.angle, isHeavy, isMedium, glowC);
 
         ctx.shadowBlur = isHeavy ? 22 : 14;
         ctx.shadowColor = glowC;
-        drawPixelShip(ship, e.x, e.y, e.angle, pal, ps);
+        drawPixelShip(grid, e.x, e.y, e.angle, pal, ps);
         ctx.shadowBlur = 0;
 
         const maxHpSafe = e.maxHp > 0 ? e.maxHp : 10;
         const pct = Math.max(0, Math.min(1, e.hp / maxHpSafe));
         const bw = isHeavy ? 44 : isMedium ? 32 : 22;
-        const bh = 3, bx = Math.round(e.x - bw / 2), by = Math.round(e.y - (isHeavy ? 40 : 30));
-        ctx.fillStyle = "#220000"; ctx.fillRect(bx, by, bw, bh);
+        const bh = 3;
+        const bx = Math.round(e.x - bw / 2);
+        const by = Math.round(e.y - (isHeavy ? 40 : 30));
+        ctx.fillStyle = "#220000";
+        ctx.fillRect(bx, by, bw, bh);
         ctx.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
         ctx.fillRect(bx, by, Math.round(bw * pct), bh);
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  DRAW – PLAYERS
-// ════════════════════════════════════════════════════════
-function parseHSL(hsl) {
-    const m = hsl.match(/[\d.]+/g);
-    return m ? m.map(Number) : [180, 80, 60];
-}
-
-function drawPlayers(players, myId, mx, my, myShield) {
+function drawPlayers(players: Record<string, any>, myId: string | null, mx: number, my: number, myShield: number): void {
     for (const id in players) {
         const p = players[id];
         if (!p.alive) continue;
@@ -754,7 +702,6 @@ function drawPlayers(players, myId, mx, my, myShield) {
         const hsl = parseHSL(p.color ?? "hsl(180,80%,60%)");
 
         let pal = makePlayerPalette(hsl, p.team);
-        // Hit flash animation
         if (isMe && performance.now() < playerDamageFlashUntil) {
             pal = PAL_FLASH_RED;
         }
@@ -763,20 +710,21 @@ function drawPlayers(players, myId, mx, my, myShield) {
 
         ctx.shadowBlur = isMe ? 22 : 14;
         ctx.shadowColor = teamGlow;
-        drawPixelShip(SHIP_PLAYER, p.x, p.y, p.angle, pal, isMe ? 3 : 2);
+        drawPixelShip(SHIP_BITMAPS.player!, p.x, p.y, p.angle, pal, isMe ? 3 : 2, "player", DEFAULT_LOADOUTS.player, Math.floor(performance.now() / 50));
         ctx.shadowBlur = 0;
 
         if (isMe) {
-            // Estela con color de equipo
             const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
-            drawEngineTrail(p.x, p.y, p.angle, false, false, trailColor);
+            const reversing = keys["s"] || keys["arrowdown"];
+            drawEngineTrail(p.x, p.y, p.angle, false, false, trailColor, reversing);
 
-            if (keys["shift"] || (serverPlayers[myId]?.boostCooldown > 0)) {
+            if ((keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28) {
                 const mx_boost = -Math.cos(p.angle);
                 const my_boost = -Math.sin(p.angle);
                 for (let i = 0; i < 6; i++) {
-                    const ex = p.x + mx_boost * (18 + i * 4) + (Math.random() - 0.5) * 5;
-                    const ey = p.y + my_boost * (18 + i * 4) + (Math.random() - 0.5) * 5;
+                    const t = performance.now() * 0.01 + i * 1.3;
+                    const ex = p.x + mx_boost * (18 + i * 4) + Math.sin(t) * 2.5;
+                    const ey = p.y + my_boost * (18 + i * 4) + Math.cos(t + 0.7) * 2.5;
                     ctx.globalAlpha = 0.7;
                     ctx.fillStyle = "#00ccff";
                     ctx.fillRect(Math.round(ex), Math.round(ey), 3, 3);
@@ -793,9 +741,7 @@ function drawPlayers(players, myId, mx, my, myShield) {
             ctx.stroke();
         }
 
-        // Draw HUD local elements (only if playing)
         if (isMe && !gameOver) {
-            // Crosshair
             ctx.strokeStyle = "rgba(0,229,255,0.22)";
             ctx.lineWidth = 1;
             ctx.setLineDash([5, 7]);
@@ -810,7 +756,6 @@ function drawPlayers(players, myId, mx, my, myShield) {
             ctx.stroke();
             ctx.beginPath(); ctx.arc(mx, my, 4, 0, Math.PI * 2); ctx.stroke();
 
-            // Reload Indicator
             const now = performance.now();
             const cd = COOLDOWN_TABLE[myWeapon] || 200;
             const elapsed = now - lastShot;
@@ -829,19 +774,15 @@ function drawPlayers(players, myId, mx, my, myShield) {
         ctx.textAlign = "center";
         ctx.fillStyle = isMe ? "rgba(0,229,255,0.85)"
             : p.team === "red" ? "rgba(255,100,100,0.7)"
-                : p.team === "blue" ? "rgba(100,180,255,0.7)"
-                    : "rgba(200,220,255,0.5)";
+                : p.team === "blue" ? "rgba(100,180,255,0.7)" : "rgba(200,220,255,0.5)";
         const tagY = Math.round(p.y - (isMe ? 42 : 30));
         if (p.name) ctx.fillText(p.name.slice(0, 8), Math.round(p.x), tagY - 8);
         ctx.fillText(`${p.score ?? 0}`, Math.round(p.x), tagY);
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  WAVE FLASH
-// ════════════════════════════════════════════════════════
 let waveFlash = 0;
-function drawWaveFlash() {
+function drawWaveFlash(): void {
     if (waveFlash <= 0) return;
     ctx.globalAlpha = (waveFlash / 50) * 0.3;
     ctx.fillStyle = "#00e5ff";
@@ -850,60 +791,59 @@ function drawWaveFlash() {
     waveFlash--;
 }
 
-// ════════════════════════════════════════════════════════
-//  STATE
-// ════════════════════════════════════════════════════════
-let myId = null;
+let myId: string | null = null;
 let myTeam = "red";
-let myWeapon = "naval_cannon";
+let myWeapon: WeaponKind = "naval_cannon";
 let myShield = 3;
-let myHp = MAX_HP;
+let myHp = 5;
 let myMaxShield = 3;
-let myMaxHp = MAX_HP;
+let myMaxHp = 5;
 let myBoostEnergy = 100;
 let myHeat = 0;
 let gameOver = false;
+let respawnState: "idle" | "requesting" = "idle";
+let respawnTimer: ReturnType<typeof setTimeout> | null = null;
 let score = 0;
 let currentWave = 1;
-let serverPlayers = {};
-let serverBullets = {};
-let serverEnemies = {};
-let serverZones = {};
+let serverPlayers: Record<string, any> = {};
+let serverBullets: Record<string, any> = {};
+let serverEnemies: Record<string, any> = {};
+let serverZones: Record<string, any> = {};
 
 let cameraX = 0, cameraY = 0;
 let screenMx = window.innerWidth / 2, screenMy = window.innerHeight / 2;
 
-let renderPlayers = {};
-let renderEnemies = {};
-let renderBullets = {};
+let renderPlayers: Record<string, any> = {};
+let renderEnemies: Record<string, any> = {};
+let renderBullets: Record<string, any> = {};
 
-// ── Interpolation helpers ─────────────────────────────────
-function lerp(start, end, amt) {
+function lerp(start: number, end: number, amt: number): number {
     return (1 - amt) * start + amt * end;
 }
 
-function lerpAngle(a, b, amt) {
-    let delta = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
-    if (delta < -Math.PI) delta += Math.PI * 2;
+function lerpAngle(a: number, b: number, amt: number): number {
+    const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
     return a + delta * amt;
 }
 
-function syncRenderState(renderMap, serverMap, isAngle = false) {
+function syncRenderState(renderMap: Record<string, any>, serverMap: Record<string, any>, isAngle = false): void {
     for (const id in serverMap) {
         const s = serverMap[id];
+        if (id === myId) {
+            renderMap[id] = { ...s };
+            continue;
+        }
         if (!renderMap[id]) {
             renderMap[id] = { ...s };
         } else {
             const r = renderMap[id];
-            r.x = lerp(r.x, s.x, 0.45);
-            r.y = lerp(r.y, s.y, 0.45);
+            r.x = lerp(r.x, s.x, 0.2);
+            r.y = lerp(r.y, s.y, 0.2);
             if (isAngle && s.angle !== undefined) {
                 r.angle = lerpAngle(r.angle || 0, s.angle, 0.4);
-            }
-            else if (s.angle !== undefined) {
+            } else if (s.angle !== undefined) {
                 r.angle = s.angle;
             }
-
             r.hp = s.hp; r.maxHp = s.maxHp; r.shield = s.shield; r.score = s.score;
             r.color = s.color; r.kind = s.kind; r.alive = s.alive;
             r.team = s.team; r.name = s.name;
@@ -911,27 +851,20 @@ function syncRenderState(renderMap, serverMap, isAngle = false) {
         }
     }
     for (const id in renderMap) {
+        if (id === myId) continue;
         if (!serverMap[id]) delete renderMap[id];
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  INPUT
-// ════════════════════════════════════════════════════════
-const keys = {};
+const keys: Record<string, boolean> = {};
 let isMouseShooting = false;
 
-window.addEventListener("keydown", e => {
+window.addEventListener("keydown", (e: KeyboardEvent) => {
     keys[e.key.toLowerCase()] = true;
-
-    // Quick chat (1-9)
     if (!e.ctrlKey && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key) - 1;
-        if (idx < QUICK_CHAT.length) {
-            send("chat", { text: QUICK_CHAT[idx] });
-        }
+        if (idx < QUICK_CHAT.length) send("chat", { text: QUICK_CHAT[idx] });
     }
-
     if ((e.key.toLowerCase() === "q" || e.key === "Tab") && !e.repeat) {
         e.preventDefault();
         send("switch_weapon");
@@ -944,23 +877,22 @@ window.addEventListener("keydown", e => {
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
         adminPanel?.classList.toggle("hidden");
-        // Show cursor when admin panel visible
         canvas.style.cursor = adminPanel?.classList.contains("hidden") ? "none" : "default";
     }
 });
-window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener("keyup", (e: KeyboardEvent) => { keys[e.key.toLowerCase()] = false; });
 window.addEventListener("blur", () => {
     for (const k in keys) keys[k] = false;
     isMouseShooting = false;
 });
 
 let mx = WORLD_W / 2, my = WORLD_H / 2;
-canvas.addEventListener("mousemove", e => {
+canvas.addEventListener("mousemove", (e: MouseEvent) => {
     const r = canvas.getBoundingClientRect();
     screenMx = e.clientX - r.left;
     screenMy = e.clientY - r.top;
 });
-canvas.addEventListener("mousedown", e => {
+canvas.addEventListener("mousedown", (e: MouseEvent) => {
     if (e.button === 0 && !gameOver) {
         isMouseShooting = true;
         fireShot();
@@ -969,35 +901,28 @@ canvas.addEventListener("mousedown", e => {
         sendBoost();
     }
 });
-window.addEventListener("mouseup", e => { if (e.button === 0) isMouseShooting = false; });
-canvas.addEventListener("contextmenu", e => e.preventDefault());
+window.addEventListener("mouseup", (e: MouseEvent) => { if (e.button === 0) isMouseShooting = false; });
+canvas.addEventListener("contextmenu", (e: Event) => e.preventDefault());
 
 let lastShot = 0;
-function fireShot() {
+function fireShot(): void {
     const now = performance.now();
     const cd = COOLDOWN_TABLE[myWeapon] ?? 200;
     if (now - lastShot < cd || gameOver) return;
     lastShot = now;
-    ensureAudio();
-    playWeaponSound(myWeapon);
     send("shoot");
 }
 
-function sendBoost() {
+function sendBoost(): void {
     if (!socket || socket.readyState !== WebSocket.OPEN || gameOver || myBoostEnergy < 28) return;
-    ensureAudio();
-    playTone(180, 0.08, "square", 0.04, 90);
     send("boost");
 }
 
-// ════════════════════════════════════════════════════════
-//  ADMIN PANEL LOGIC
-// ════════════════════════════════════════════════════════
 adminClose?.addEventListener("click", () => {
     adminPanel?.classList.add("hidden");
     canvas.style.cursor = "none";
 });
-adminAuthForm?.addEventListener("submit", (e) => {
+adminAuthForm?.addEventListener("submit", (e: Event) => {
     e.preventDefault();
     send("admin_auth", { key: adminKeyInput?.value ?? "" });
 });
@@ -1015,8 +940,15 @@ adminJoinBlue?.addEventListener("click", () => {
     send("set_team", { team: "blue" });
     myTeam = "blue"; updateTeamBadge("blue");
 });
+adminGodmodeBtn?.addEventListener("click", () => send("admin_godmode"));
+adminHealBtn?.addEventListener("click", () => send("admin_heal_all"));
+adminResetDataBtn?.addEventListener("click", () => {
+    localStorage.clear();
+    setDiff(adminResetDataBtn, "DATA CLEARED");
+    setTimeout(() => { window.location.reload(); }, 500);
+});
 
-function refreshAdminPlayerList() {
+function refreshAdminPlayerList(): void {
     if (!adminPlayerList) return;
     adminPlayerList.innerHTML = "";
     for (const [id, p] of Object.entries(serverPlayers)) {
@@ -1036,29 +968,30 @@ function refreshAdminPlayerList() {
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  WEBSOCKET
-// ════════════════════════════════════════════════════════
-let socket;
+let socket: WebSocket | null = null;
 let isAdmin = false;
 let lastHitSoundTime = 0;
 
-function send(type, payload = {}) {
+function send(type: string, payload: Record<string, any> = {}): void {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type, ...payload }));
 }
 
-function connect() {
+function connect(): void {
     setStatus("connecting");
+    const token = generateToken("player");
+    const wsUrl = IS_LOCAL
+        ? `${WORKER_WS}/room/${ROOM_ID}?token=${token}`
+        : `${WORKER_WS}/room/${ROOM_ID}?token=${token}`;
     try {
-        socket = new WebSocket(`${WORKER_WS}/room/${ROOM_ID}`);
+        socket = new WebSocket(wsUrl);
     } catch (e) {
         setStatus("disconnected");
         setTimeout(connect, 3000);
         return;
     }
     socket.addEventListener("open", () => setStatus("connected"));
-    socket.addEventListener("message", e => handleMsg(JSON.parse(e.data)));
+    socket.addEventListener("message", (e: MessageEvent) => handleMsg(JSON.parse(e.data)));
     socket.addEventListener("close", () => {
         setStatus("disconnected");
         setTimeout(connect, 2500);
@@ -1066,7 +999,41 @@ function connect() {
     socket.addEventListener("error", () => setStatus("disconnected"));
 }
 
-const msgHandlers = {
+function syncPlayerState(me: any): void {
+    score = me.score;
+    myShield = me.shield ?? myShield;
+    myMaxShield = me.shieldMax ?? 3;
+    myHp = me.hp ?? myHp;
+    myMaxHp = me.maxHp ?? myMaxHp;
+    myBoostEnergy = me.boostEnergy ?? myBoostEnergy;
+    myHeat = me.weaponHeat ?? myHeat;
+    if (me.weapon && me.weapon !== myWeapon) {
+        myWeapon = me.weapon;
+        drawWeaponHUD(myWeapon);
+    }
+    if (gameOver && me.alive) {
+        gameOver = false;
+        if (overlay) {
+            overlay.classList.add("hidden");
+            overlay.style.pointerEvents = "auto";
+        }
+        document.body.style.cursor = "none";
+        canvas.style.cursor = "crosshair";
+        lastShot = 0; particles = [];
+    }
+    if (me.isAdmin && !isAdmin) {
+        isAdmin = true;
+        adminControls?.classList.remove("hidden");
+        setDiff(adminAuthStatus, "◆ ADMIN ACTIVE");
+        if (adminAuthStatus) adminAuthStatus.className = "ok";
+    }
+    if (!me.alive && !gameOver) {
+        gameOver = true;
+        showGameOver();
+    }
+}
+
+const msgHandlers: Record<string, (msg: any) => void> = {
     init(msg) {
         myId = msg.playerId;
         myTeam = msg.team || "red";
@@ -1080,30 +1047,8 @@ const msgHandlers = {
         serverEnemies = msg.enemies;
         serverZones = msg.zones ?? {};
         currentWave = msg.wave;
-        const me = serverPlayers[myId];
-        if (me) {
-            score = me.score;
-            myShield = me.shield ?? myShield;
-            myMaxShield = me.shieldMax ?? 3;
-            myHp = me.hp ?? myHp;
-            myMaxHp = me.maxHp ?? myMaxHp;
-            myBoostEnergy = me.boostEnergy ?? myBoostEnergy;
-            myHeat = me.weaponHeat ?? myHeat;
-
-            // Fix: Resurrection logic on reconnect
-            if (gameOver && me.alive) {
-                gameOver = false;
-                if (overlay) {
-                    overlay.classList.add("hidden");
-                    overlay.style.pointerEvents = "auto";
-                }
-                lastShot = 0; particles = [];
-            }
-            if (!me.alive && !gameOver) {
-                gameOver = true;
-                showGameOver();
-            }
-        }
+        const me = serverPlayers[myId!];
+        if (me) syncPlayerState(me);
         updateHUD();
     },
     tick(msg) {
@@ -1112,36 +1057,8 @@ const msgHandlers = {
         serverEnemies = msg.enemies;
         if (msg.zones) serverZones = msg.zones;
         currentWave = msg.wave;
-        const me = serverPlayers[myId];
-        if (me) {
-            score = me.score;
-            myShield = me.shield ?? myShield;
-            myMaxShield = me.shieldMax ?? 3;
-            myHp = me.hp ?? myHp;
-            myMaxHp = me.maxHp ?? myMaxHp;
-            myBoostEnergy = me.boostEnergy ?? myBoostEnergy;
-            myHeat = me.weaponHeat ?? myHeat;
-
-            if (gameOver && me.alive) {
-                gameOver = false;
-                if (overlay) {
-                    overlay.classList.add("hidden");
-                    overlay.style.pointerEvents = "auto";
-                }
-                lastShot = 0; particles = [];
-            }
-
-            if (me.isAdmin && !isAdmin) {
-                isAdmin = true;
-                adminControls?.classList.remove("hidden");
-                setDiff(adminAuthStatus, "◆ ADMIN ACTIVE");
-                if (adminAuthStatus) adminAuthStatus.className = "ok";
-            }
-            if (!me.alive && !gameOver) {
-                gameOver = true;
-                showGameOver();
-            }
-        }
+        const me = serverPlayers[myId!];
+        if (me) syncPlayerState(me);
         updateHUD();
         if (isAdmin) refreshAdminPlayerList();
     },
@@ -1162,10 +1079,21 @@ const msgHandlers = {
             updateHUD();
         }
     },
+    admin_godmode(msg) {
+        if (adminGodmodeBtn) setDiff(adminGodmodeBtn, msg.active ? "GODMODE ON" : "GODMODE OFF");
+        if (adminGodmodeBtn) {
+            adminGodmodeBtn.className = msg.active ? "admin-btn-danger" : "admin-btn-warn";
+        }
+    },
     weapon_changed(msg) {
         myWeapon = msg.weapon;
         lastShot = 0;
         drawWeaponHUD(myWeapon);
+    },
+    shockwave(msg) {
+        if (msg.ownerId !== myId) return;
+        if (!audioCtx) ensureAudio();
+        playWeaponSound(msg.weapon);
     },
     explosion(msg) {
         playExplosionSound();
@@ -1173,36 +1101,25 @@ const msgHandlers = {
         if (msg.kind === "battleship" || msg.kind === "dreadnought") {
             explode(msg.x, msg.y, ["#ffcc00", "#ff6600", "#ffffff", "#4466ff"], 40, 7, scale);
             explode(msg.x, msg.y, ["#ff4400", "#ff9900"], 20, 3, 1);
-            addScreenShake(8, 10);
-            setTimeout(() => {
-                explode(msg.x, msg.y, ["#ff4400", "#ff9900", "#ffff00", "#ffffff"], 60, 5, scale);
-            }, 150);
+            addScreenShake(1.5, 4);
+            setTimeout(() => { explode(msg.x, msg.y, ["#ff4400", "#ff9900", "#ffff00", "#ffffff"], 60, 5, scale); }, 150);
         } else if (msg.kind === "frigate" || msg.kind === "cruiser") {
             explode(msg.x, msg.y, ["#cc00ff", "#ff80ff", "#ffffff", "#ff9030"], 24, 5, scale);
         } else {
             explode(msg.x, msg.y, ["#ff2060", "#ffaa20", "#ffffff"], 16, 4, scale);
         }
-
-        // Extra shake and heavy sound if near player
-        const me = serverPlayers[myId];
+        const me = serverPlayers[myId!];
         if (me && me.alive && Math.hypot(msg.x - me.x, msg.y - me.y) < 200) {
-            addScreenShake(6, 8);
             playImpactSound(true);
             triggerHaptic(100, 0.8);
         }
     },
     hit(msg) {
         const now = performance.now();
-        if (now - lastHitSoundTime > 60) {
-            playImpactSound(false);
-            lastHitSoundTime = now;
-        }
+        if (now - lastHitSoundTime > 60) { playImpactSound(false); lastHitSoundTime = now; }
         explode(msg.x, msg.y, ["#ffffff", "#ffdd88"], 6, 2);
-
-        // Minor haptic
-        const me = serverPlayers[myId];
+        const me = serverPlayers[myId!];
         if (me && Math.hypot(msg.x - me.x, msg.y - me.y) < 100) {
-            if (msg.weapon === "railgun") addScreenShake(3, 5);
             if (msg.playerId === myId) {
                 triggerHaptic(30, 0.3);
                 flashDamageOverlay();
@@ -1212,18 +1129,14 @@ const msgHandlers = {
     },
     shield_hit(msg) {
         const now = performance.now();
-        if (now - lastHitSoundTime > 60) {
-            playImpactSound(msg.reason === "impact");
-            lastHitSoundTime = now;
-        }
-
+        if (now - lastHitSoundTime > 60) { playImpactSound(msg.reason === "impact"); lastHitSoundTime = now; }
         if (msg.playerId === myId) {
             triggerHaptic(40, 0.5);
             myShield = Math.max(0, myShield - 1);
             drawShieldHUD(myShield, myMaxShield);
             flashDamageOverlay();
             triggerPlayerDamageFlash();
-            const p = serverPlayers[myId];
+            const p = serverPlayers[myId!];
             if (p) explode(p.x, p.y, ["#4488ff", "#aaccff"], 8, 2);
         }
     },
@@ -1231,17 +1144,25 @@ const msgHandlers = {
         playExplosionSound();
         triggerHaptic(150, 1.0);
         explode(msg.x, msg.y, ["#00e5ff", "#ffffff", "#0088ff"], 30, 6);
-        if (msg.playerId === myId) {
-            gameOver = true;
-            showGameOver();
+        if (msg.playerId === myId) { gameOver = true; showGameOver(); }
+    },
+    respawned() {
+        if (respawnState === "idle") return;
+        respawnState = "idle";
+        if (respawnTimer) { clearTimeout(respawnTimer); respawnTimer = null; }
+        if (restartBtn) { restartBtn.disabled = false; setDiff(restartBtn, "↻ RESPECTAR"); }
+        gameOver = false;
+        if (overlay) {
+            overlay.classList.add("hidden");
+            overlay.style.pointerEvents = "auto";
         }
+        document.body.style.cursor = "none";
+        canvas.style.cursor = "crosshair";
+        lastShot = 0; particles = [];
     },
     player_team(msg) {
         if (serverPlayers[msg.playerId]) serverPlayers[msg.playerId].team = msg.team;
-        if (msg.playerId === myId) {
-            myTeam = msg.team;
-            updateTeamBadge(myTeam);
-        }
+        if (msg.playerId === myId) { myTeam = msg.team; updateTeamBadge(myTeam); }
     },
     new_wave(msg) {
         playTone(520, 0.08, "triangle", 0.04, 820);
@@ -1262,7 +1183,6 @@ const msgHandlers = {
         updateHUD();
     },
     objective(msg) {
-        // Fix: Map single progress to appropriate team field dynamically
         const zone = serverZones[msg.zoneId] || {};
         zone.id = msg.zoneId;
         zone.owner = msg.owner;
@@ -1270,37 +1190,33 @@ const msgHandlers = {
         zone.x = msg.x ?? zone.x;
         zone.y = msg.y ?? zone.y;
         zone.radius = msg.radius ?? zone.radius;
-
         if (msg.owner === "red") zone.redProgress = msg.progress;
         else if (msg.owner === "blue") zone.blueProgress = msg.progress;
         else if (msg.owner === "enemies") zone.enemyProgress = msg.progress;
-
         serverZones[msg.zoneId] = zone;
         playObjectiveSound();
         drawObjectiveHUD(serverZones);
-    }
+    },
 };
 
-function handleMsg(msg) {
+function handleMsg(msg: any): void {
     const handler = msgHandlers[msg.type];
     if (handler) handler(msg);
 }
 
-// ── Input → Server ────────────────────────────────────────
 let lastInputTime = 0;
 let lastInputState = { forward: 0, strafe: 0, angle: 0 };
 
-function sendInput() {
+function sendInput(): void {
     if (!socket || socket.readyState !== WebSocket.OPEN || gameOver) return;
     let forward = 0, strafe = 0;
     if (keys["w"] || keys["arrowup"]) forward += 1;
     if (keys["s"] || keys["arrowdown"]) forward -= 1;
     if (keys["a"] || keys["arrowleft"]) strafe -= 1;
     if (keys["d"] || keys["arrowright"]) strafe += 1;
-    const p = serverPlayers[myId];
+    const p = serverPlayers[myId!];
     let angle = p ? Math.atan2(my - p.y, mx - p.x) : 0;
     angle = Math.round(angle * 100) / 100;
-
     let angleDiff = Math.abs(angle - lastInputState.angle);
     if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
 
@@ -1312,10 +1228,7 @@ function sendInput() {
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  HUD UPDATE
-// ════════════════════════════════════════════════════════
-function updateHUD() {
+function updateHUD(): void {
     if (scoreDisp) setDiff(scoreDisp, String(score || 0).padStart(6, "0"));
     if (waveNumDisp) setDiff(waveNumDisp, String(currentWave || 1));
     if (playerCountDisp) setDiff(playerCountDisp, String(Object.keys(serverPlayers).length));
@@ -1327,19 +1240,20 @@ function updateHUD() {
     drawObjectiveHUD(serverZones);
 }
 
-function setStatus(s) {
+function setStatus(s: string): void {
     if (!connStatusEl) return;
-    const map = {
+    const map: Record<string, [string, string]> = {
         connecting: ["status-connecting", "◆ CONNECTING..."],
         connected: ["status-connected", "◆ CONNECTED"],
         disconnected: ["status-disconnected", "◆ DISCONNECTED"],
     };
-    const [cls, text] = map[s] || map.disconnected;
+    const entry: [string, string] = (map[s] ?? map["disconnected"])!;
+    const [cls, text] = entry;
     connStatusEl.className = cls;
     setDiff(connStatusEl, text);
 }
 
-function showGameOver() {
+function showGameOver(): void {
     if (overlay) {
         overlay.classList.remove("hidden");
         overlay.style.background = "rgba(0,0,0,0.4)";
@@ -1348,40 +1262,34 @@ function showGameOver() {
     document.body.style.cursor = "default";
     canvas.style.cursor = "default";
     if (restartBtn) {
-        restartBtn.style.pointerEvents = "auto";
+        if (respawnState === "requesting") {
+            restartBtn.disabled = true;
+            setDiff(restartBtn, "RESPAWNING...");
+        } else {
+            restartBtn.disabled = false;
+            restartBtn.style.pointerEvents = "auto";
+        }
     }
-    if (overlayScore) {
-        setDiff(overlayScore, `PUNTOS: ${String(score || 0).padStart(6, "0")}\nMODO ESPECTADOR (WASD)`);
-    }
+    if (overlayScore) setDiff(overlayScore, `PUNTOS: ${String(score || 0).padStart(6, "0")}\nMODO ESPECTADOR (WASD)`);
 }
 
-// Respawn button now sends a respawn command instead of reconnecting
 restartBtn?.addEventListener("click", () => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        send("respawn");
-    }
-    updateHUD();
-
-    if (overlay) {
-        overlay.classList.add("hidden");
-        overlay.style.pointerEvents = "none";
-    }
-    document.body.style.cursor = "none";
-    canvas.style.cursor = "none";
-    gameOver = false;
-    lastShot = 0;
-    particles = [];
-    myWeapon = "naval_cannon";
-    myShield = myMaxShield;
-    myHp = myMaxHp;
-    myBoostEnergy = 100;
-    myHeat = 0;
-    isMouseShooting = false;
-    for (const k in keys) keys[k] = false;
+    if (respawnState === "requesting") return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    respawnState = "requesting";
+    restartBtn.disabled = true;
+    setDiff(restartBtn, "RESPAWNING...");
+    send("respawn");
+    if (respawnTimer) clearTimeout(respawnTimer);
+    respawnTimer = setTimeout(() => {
+        respawnState = "idle";
+        restartBtn.disabled = false;
+        setDiff(restartBtn, "↻ RESPECTAR");
+        respawnTimer = null;
+    }, 5000);
 });
 
-// ── Tutorial overlay (first visit) ───────────────────────
-(function initTutorial() {
+(function initTutorial(): void {
     if (localStorage.getItem("speakerdust_tutorial_seen")) return;
     const tut = document.createElement("div");
     tut.id = "tutorial-overlay";
@@ -1406,13 +1314,10 @@ restartBtn?.addEventListener("click", () => {
     window.addEventListener("keydown", dismiss, { once: true });
 })();
 
-// ════════════════════════════════════════════════════════
-//  MAIN LOOP
-// ════════════════════════════════════════════════════════
 generateStars();
-canvas.style.cursor = "none"; // Ocultar cursor en juego
+canvas.style.cursor = "none";
 
-function gameLoop(now) {
+function gameLoop(now: number): void {
     requestAnimationFrame(gameLoop);
 
     updateStars();
@@ -1421,25 +1326,20 @@ function gameLoop(now) {
     const availW = canvas.width / dpr;
     const availH = canvas.height / dpr;
 
-    // Camera logic (Includes Soft clamp to world bounds & Spectator Mode)
-    const me = renderPlayers[myId];
+    const me = renderPlayers[myId!];
     if (me && !gameOver) {
         let targetCamX = me.x - availW / 2;
         let targetCamY = me.y - availH / 2;
-
         cameraX = lerp(cameraX, targetCamX, CAMERA_SMOOTH);
         cameraY = lerp(cameraY, targetCamY, CAMERA_SMOOTH);
     } else if (gameOver) {
-        // Free camera in spectator mode
         let panX = 0, panY = 0;
         if (keys["w"] || keys["arrowup"]) panY -= 1;
         if (keys["s"] || keys["arrowdown"]) panY += 1;
         if (keys["a"] || keys["arrowleft"]) panX -= 1;
         if (keys["d"] || keys["arrowright"]) panX += 1;
-
         cameraX += panX * SPECTATOR_CAM_SPEED;
         cameraY += panY * SPECTATOR_CAM_SPEED;
-
     }
 
     mx = screenMx + cameraX;
@@ -1453,8 +1353,6 @@ function gameLoop(now) {
 
     syncRenderState(renderPlayers, serverPlayers, true);
     syncRenderState(renderEnemies, serverEnemies, true);
-
-    // Render local reference to bullets (avoids spread operator overhead per frame)
     renderBullets = serverBullets;
 
     tickParticles();
@@ -1467,10 +1365,11 @@ function gameLoop(now) {
     }
     if (dreadnoughtNear && Math.random() < 0.1) playTone(40, 0.1, "sine", 0.02, 35);
 
+    let shakeOffX = 0, shakeOffY = 0;
     if (shakeDuration > 0) {
         const sx = (Math.random() - 0.5) * shakeX * (shakeDuration / 12);
         const sy = (Math.random() - 0.5) * shakeY * (shakeDuration / 12);
-        cameraX += sx; cameraY += sy;
+        shakeOffX += sx; shakeOffY += sy;
         shakeDuration--;
     }
 
@@ -1479,7 +1378,7 @@ function gameLoop(now) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.scale(dpr, dpr);
-    ctx.translate(-Math.round(cameraX), -Math.round(cameraY));
+    ctx.translate(-(cameraX + shakeOffX), -(cameraY + shakeOffY));
 
     drawBackground();
     drawObjectives(serverZones);
@@ -1492,7 +1391,6 @@ function gameLoop(now) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
-// Ensure interactions initialize audio gracefully
 window.addEventListener("click", () => { userInteracted = true; ensureAudio(); }, { once: true });
 window.addEventListener("keydown", () => { userInteracted = true; ensureAudio(); }, { once: true });
 
