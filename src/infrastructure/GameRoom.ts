@@ -354,7 +354,10 @@ class GameRoom extends DurableObject<Env> {
     this.combat.resolvePendingShots();
     this.combat.updateBullets(aliveShips);
     this.combat.resolveCollisions(aliveShips);
-    this.combat.resolveWaveCompletion(alivePlayers);
+    const newShips = this.combat.resolveWaveCompletion(alivePlayers);
+    for (const { ai, ship } of newShips) {
+      this.aiStates.set(ship.id, ai);
+    }
 
     if (st.tick % SAVE_EVERY_TICKS === 0) this.persistence.markDirty();
     this.safeBroadcast(buildTickPayload(st));

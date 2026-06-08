@@ -159,7 +159,7 @@ export class CombatSystem {
       }
       this.markDirty();
     } else {
-      if (result.shieldHit) {
+      if (result.shieldHit && target.controller === "player") {
         this.broadcast({ type: "shield_hit", playerId: target.id, reason: "weapon" });
       } else {
         this.broadcast({ type: "hit", x: target.x, y: target.y, weapon: hit.kind });
@@ -230,10 +230,10 @@ export class CombatSystem {
     }
   }
 
-  resolveWaveCompletion(alivePlayers: Ship[]): void {
+  resolveWaveCompletion(alivePlayers: Ship[]): Array<{ ship: Ship; ai: AiState }> {
     const state = this.getState();
     const remainingEnemies = Object.values(state.ships).filter(s => s.controller === "ai" && s.alive);
-    if (remainingEnemies.length > 0 || alivePlayers.length === 0) return;
+    if (remainingEnemies.length > 0 || alivePlayers.length === 0) return [];
 
     state.wave++;
 
@@ -254,12 +254,15 @@ export class CombatSystem {
       player.iFrames = 60;
     }
 
-    for (const { ship } of spawnWave(state.wave)) {
+    const spawned = spawnWave(state.wave);
+    for (const { ship } of spawned) {
       state.ships[ship.id] = ship;
     }
 
     this.broadcast({ type: "new_wave", wave: state.wave });
     this.markDirty();
+
+    return spawned;
   }
 
   private queueShot(ownerId: string, ownerController: "player" | "ai", weapon: WeaponKind, angle: number, delay: number, targetId?: string): void {
