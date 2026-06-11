@@ -4,7 +4,8 @@ import { EMP_DURATION_TICKS, WEAPON_STATS } from "../../core/combat/weaponStats"
 import { createProjectile, type Projectile } from "../../core/combat/projectiles";
 import { isAngleInArc } from "../../core/combat/patterns";
 import type { Ship, AiState } from "../../core/ships/shipTypes";
-import { classStats, SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
+import { SHIP_CLASSES } from "@speakerdust/shared";
+import { SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
 import { distSq } from "../../core/math";
 import { applyShipDamage, resolveShipCollision } from "../physics/playerSystem";
 import { applyBulletSplash, computeLeadAngle, spawnWave } from "../ai/enemySystem";
@@ -148,7 +149,7 @@ export class CombatSystem {
     if (result.dead) {
       delete state.ships[target.id];
       if (owner) {
-        owner.score += target.controller === "ai" ? classStats(target.shipClass).score : 100;
+        owner.score += target.controller === "ai" ? (SHIP_CLASSES[target.shipClass] ?? SHIP_CLASSES.corvette!).stats.score : 100;
       }
       if (target.controller === "player") {
         this.broadcast({ type: "player_dead", playerId: target.id, x: target.x, y: target.y });
@@ -294,9 +295,10 @@ export class CombatSystem {
     const stats = WEAPON_STATS[weapon];
     const originX = x + Math.cos(angle) * stats.muzzleOffset;
     const originY = y + Math.sin(angle) * stats.muzzleOffset;
+    const currentTick = state.tick;
 
     for (const off of stats.fireOffsets) {
-      const projectile = createProjectile(ownerId, ownerController, originX, originY, angle + off, weapon, targetId);
+      const projectile = createProjectile(ownerId, ownerController, originX, originY, angle + off, weapon, targetId, currentTick);
       state.projectiles[projectile.id] = projectile;
     }
     this.broadcast({ type: "shockwave", x: originX, y: originY, weapon, ownerId });

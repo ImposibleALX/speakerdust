@@ -7,13 +7,19 @@ import {
 } from "../../core/ships/shipTypes";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WORLD_W, WORLD_H } from "../../core/world/mapConfig";
+import { SHIP_CLASSES, checkShipCollision } from "@speakerdust/shared";
 import {
-  DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats,
+  DEFAULT_PLAYER_CLASS,
   SHIP_BOOST_COST, SHIP_BOOST_COOLDOWN,
-  SHIP_COLLISION_DAMAGE_SPEED, SHIP_HEAT_LIMIT, collisionRadiusFor,
+  SHIP_COLLISION_DAMAGE_SPEED, SHIP_HEAT_LIMIT,
 } from "../../core/ships/shipStats";
 import type { ShipZoneBonus } from "../../core/world/zones";
 import { clamp, rand, shortestAngleDelta } from "../../core/math";
+import {
+  createShipPhysics,
+  initShipPhysicsFromShip,
+  syncShipToPhysics,
+} from "./shipPhysics";
 
 const EMPTY_BONUS: ShipZoneBonus = {
   heatCool: 0,
@@ -25,29 +31,32 @@ const EMPTY_BONUS: ShipZoneBonus = {
 };
 
 function applyClassStats(ship: Ship, shipClass: ShipClass): void {
-  const stats = classStats(shipClass);
+  const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
+  const stats = def.stats;
   ship.shipClass = shipClass;
   ship.role = stats.role;
-  ship.mass = stats.mass;
-  ship.turnRate = stats.turnRate;
-  ship.drag = stats.drag;
-  ship.maxSpeed = stats.maxSpeed;
-  ship.thrustForce = stats.thrustForce;
-  ship.strafeThrustForce = stats.strafeThrustForce;
+  ship.mass = def.physics.mass;
+  ship.turnRate = def.physics.maxAngularSpeed;
+  ship.drag = def.physics.linearDrag;
+  ship.maxSpeed = def.physics.maxLinearSpeed;
+  ship.thrustForce = def.physics.thrustAccel;
+  ship.strafeThrustForce = def.physics.strafeAccel;
   ship.weaponSlots = [...stats.weaponSlots];
   if (!ship.weaponSlots.includes(ship.weapon)) ship.weapon = ship.weaponSlots[0]!;
 }
 
 export function createPlayer(playerId: string, team: Team): Ship {
   const hue = Math.floor(Math.random() * 360);
-  const stats = SHIP_CLASS_STATS[DEFAULT_PLAYER_CLASS];
-  return {
+  const def = SHIP_CLASSES[DEFAULT_PLAYER_CLASS]!;
+  const stats = def.stats;
+  const phys = def.physics;
+  const ship: Ship = {
     id: playerId,
     controller: "player",
     shipClass: DEFAULT_PLAYER_CLASS,
     role: stats.role,
-    mass: stats.mass,
-    turnRate: stats.turnRate,
+    mass: phys.mass,
+    turnRate: phys.maxAngularSpeed,
     weaponSlots: [...stats.weaponSlots],
     x: rand(200, WORLD_W - 200),
     y: rand(200, WORLD_H - 200),
@@ -74,20 +83,26 @@ export function createPlayer(playerId: string, team: Team): Ship {
     empTicks: 0,
     inputForward: 0,
     inputStrafe: 0,
+    inputTurn: 0,
     boostQueued: false,
     iFrames: 60,
     isAdmin: false,
     godmode: false,
     inputSeq: 0,
-    drag: stats.drag,
-    maxSpeed: stats.maxSpeed,
-    thrustForce: stats.thrustForce,
-    strafeThrustForce: stats.strafeThrustForce,
+    drag: phys.linearDrag,
+    maxSpeed: phys.maxLinearSpeed,
+    thrustForce: phys.thrustAccel,
+    strafeThrustForce: phys.strafeAccel,
+    heading: -Math.PI / 2,
+    angularVelocity: 0,
+    _physics: createShipPhysics(DEFAULT_PLAYER_CLASS),
   };
+  initShipPhysicsFromShip(ship._physics!, ship);
+  return ship;
 }
 
 export function respawnPlayer(player: Ship): void {
-  const stats = classStats(player.shipClass || DEFAULT_PLAYER_CLASS);
+  const stats = (SHIP_CLASSES[player.shipClass || DEFAULT_PLAYER_CLASS] ?? SHIP_CLASSES.corvette!).stats;
   player.x = rand(200, WORLD_W - 200);
   player.y = rand(200, WORLD_H - 200);
   player.vx = 0; player.vy = 0;
@@ -109,8 +124,13 @@ export function respawnPlayer(player: Ship): void {
   player.empTicks = 0;
   player.inputForward = 0;
   player.inputStrafe = 0;
+  player.inputTurn = 0;
   player.boostQueued = false;
   player.iFrames = 60;
+  player.heading = -Math.PI / 2;
+  player.angularVelocity = 0;
+  player._physics = createShipPhysics(player.shipClass || DEFAULT_PLAYER_CLASS);
+  initShipPhysicsFromShip(player._physics, player);
   applyClassStats(player, player.shipClass || DEFAULT_PLAYER_CLASS);
 }
 
@@ -127,45 +147,48 @@ export function updateShipPhysics(ship: Ship, zoneBonus: Partial<ShipZoneBonus> 
   const empMul = ship.empTicks > 0 ? 0.48 : 1;
   if (ship.empTicks > 0) ship.empTicks--;
 
-  ship.angle += shortestAngleDelta(ship.angle, ship.targetAngle) * ship.turnRate * empMul;
-  const cos = Math.cos(ship.angle);
-  const sin = Math.sin(ship.angle);
-  const rightX = -sin;
-  const rightY = cos;
+  const targetAngle = ship.targetAngle;
+  const throttle = ship.inputForward;
+  const strafe = ship.inputStrafe;
 
-  ship.vx += cos * ship.inputForward * ship.thrustForce * empMul;
-  ship.vy += sin * ship.inputForward * ship.thrustForce * empMul;
-  ship.vx += rightX * ship.inputStrafe * ship.strafeThrustForce * empMul;
-  ship.vy += rightY * ship.inputStrafe * ship.strafeThrustForce * empMul;
+  let turn = ship.inputTurn ?? 0;
+  if (turn === 0 && targetAngle !== undefined && targetAngle !== ship.angle) {
+    const delta = shortestAngleDelta(ship.heading, targetAngle);
+    turn = clamp(delta * 6.0, -1, 1);
+  }
+
+  // Ensure physics engine is initialized (required after hydration or AI spawn)
+  if (!ship._physics) {
+    ship._physics = createShipPhysics(ship.shipClass);
+    initShipPhysicsFromShip(ship._physics, ship);
+  }
+
+  const modifiers: { empMul?: number; boostImpulse?: number } = { empMul };
 
   if (ship.boostQueued && ship.alive) {
     if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) {
       const impulse = (1.2 / Math.max(1, ship.mass)) * empMul;
-      ship.vx += cos * impulse;
-      ship.vy += sin * impulse;
+      modifiers.boostImpulse = impulse;
       ship.boostEnergy -= SHIP_BOOST_COST;
-      ship.boostCooldown = SHIP_BOOST_COOLDOWN;
+      ship.boostCooldown = 120;
     }
     ship.boostQueued = false;
   }
 
-  ship.vx *= ship.drag;
-  ship.vy *= ship.drag;
-  const spd = Math.hypot(ship.vx, ship.vy);
-  if (spd > ship.maxSpeed) {
-    const s = ship.maxSpeed / spd;
-    ship.vx *= s; ship.vy *= s;
-  }
+  ship._physics.update(
+    { throttle, strafe, turn, aimAngle: targetAngle },
+    1 / 30.303,
+    modifiers
+  );
 
-  // La física es puramente acumulativa, sin limites de mapa.
-  ship.x += ship.vx;
-  ship.y += ship.vy;
+  syncShipToPhysics(ship, ship._physics!);
 
   if (ship.shootCooldown > 0) ship.shootCooldown--;
   if (ship.boostCooldown > 0) ship.boostCooldown--;
   if (ship.iFrames > 0) ship.iFrames--;
 
-  const stats = classStats(ship.shipClass);
+  const def = SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!;
+  const stats = def.stats;
   const heatCoolRate = stats.heatCoolRate + (bonus?.heatCool ?? 0);
   ship.weaponHeat = Math.max(0, ship.weaponHeat - heatCoolRate);
   ship.boostEnergy = Math.min(100, ship.boostEnergy + stats.boostRegenRate + bonus.energyRegen);
@@ -173,7 +196,6 @@ export function updateShipPhysics(ship: Ship, zoneBonus: Partial<ShipZoneBonus> 
   if (ship.shieldMax > 0 && ship.shield < ship.shieldMax) {
     if (ship.shieldRegenDelay > 0) {
       ship.shieldRegenDelay -= Math.max(1, 1 + bonus.shieldDelay);
-      // Aseguramos que el retardo nunca sea negativo
       if (ship.shieldRegenDelay < 0) ship.shieldRegenDelay = 0;
     } else {
       ship.shield++;
@@ -202,7 +224,7 @@ export function applyShipDamage(
   if (ship.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
   if (ship.godmode) return { dead: false, shieldHit: false, armorHit: false };
 
-  const stats = classStats(ship.shipClass);
+  const stats = (SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!).stats;
   // 1. Escudos (Absorción completa por carga)
   if (ship.shield > 0) {
     ship.shield = Math.max(0, ship.shield - 1);
@@ -242,27 +264,23 @@ export function resolveShipCollision(
   shipA: Ship,
   shipB: Ship,
 ): CollisionResult {
-  const radA = collisionRadiusFor(shipA);
-  const radB = collisionRadiusFor(shipB);
-  const combined = radA + radB;
+  const defA = SHIP_CLASSES[shipA.shipClass] ?? SHIP_CLASSES.corvette!;
+  const defB = SHIP_CLASSES[shipB.shipClass] ?? SHIP_CLASSES.corvette!;
 
-  const dx = shipA.x - shipB.x;
-  const dy = shipA.y - shipB.y;
-  const dist = Math.hypot(dx, dy) || 0.001;
+  const mtv = checkShipCollision(
+    defA.rects, { x: shipA.x, y: shipA.y }, shipA.heading,
+    defB.rects, { x: shipB.x, y: shipB.y }, shipB.heading,
+  );
+  if (!mtv) return { aHurt: false, bHurt: false };
 
-  // Si no hay superposición, no hay daño para ninguno
-  if (dist >= combined) return { aHurt: false, bHurt: false };
-
-  const nx = dx / dist;
-  const ny = dy / dist;
-  const overlap = combined - dist;
+  const { overlap, normal } = mtv;
+  const nx = normal.x;
+  const ny = normal.y;
 
   const massA = Math.max(1, shipA.mass);
   const massB = Math.max(1, shipB.mass);
   const totalMass = massA + massB;
 
-  // Separación completa sin sobrereacción:
-  // cada nave se desplaza proporcionalmente a la masa del otro.
   const pushA = overlap * (massB / totalMass);
   const pushB = overlap * (massA / totalMass);
   shipA.x += nx * pushA;
@@ -270,31 +288,27 @@ export function resolveShipCollision(
   shipB.x -= nx * pushB;
   shipB.y -= ny * pushB;
 
-  // Ajuste de velocidad: colisión perfectamente inelástica a lo largo de la normal.
-  // Esto evita que las naves reboten indefinidamente y elimina el jitter.
   const relVelX = shipA.vx - shipB.vx;
   const relVelY = shipA.vy - shipB.vy;
   const vn = relVelX * nx + relVelY * ny;
 
-  // Solo aplicamos impulso si se acercan (vn < 0)
   if (vn < 0) {
     const invMassSum = 1 / massA + 1 / massB;
-    const impulse = -vn / invMassSum; // sin restitución = 0
+    const impulse = -vn / invMassSum;
     shipA.vx += (impulse * nx) / massA;
     shipA.vy += (impulse * ny) / massA;
     shipB.vx -= (impulse * nx) / massB;
     shipB.vy -= (impulse * ny) / massB;
   }
 
-  // Daño por colisión si la velocidad relativa supera el umbral
   const relSpeed = Math.hypot(shipA.vx - shipB.vx, shipA.vy - shipB.vy);
   const isHurt = relSpeed > SHIP_COLLISION_DAMAGE_SPEED;
 
   return { aHurt: isHurt, bHurt: isHurt };
 }
 
-export function getWeaponSequenceForClass(shipClass: ShipClass): WeaponKind[] {
-  return classStats(shipClass).weaponSlots;
+export function getWeaponSequenceForClass(shipClass: ShipClass): readonly WeaponKind[] {
+  return (SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!).stats.weaponSlots;
 }
 
 export function cycleWeapon(ship: Ship): WeaponKind {

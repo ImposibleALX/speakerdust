@@ -1,223 +1,307 @@
-# Documento de Diseño de Juego (GDD) - SPEAKERDUST
-**Versión del Documento:** 1.0 (Basado en el Código Fuente v4)  
-**Género:** Shooter Espacial / Combate Naval Táctico Multijugador Cooperativo  
-**Tecnología:** Cloudflare Workers, Cloudflare Durable Objects, Cloudflare D1 SQL, HTML5 Canvas (Vanilla JS), Web Audio API  
+# SPEAKERDUST — Game Design Document
+**Language:** English (code-referenced)  
+**Genre:** Cooperative Tactical Naval Space Combat  
+**Stack:** Cloudflare Workers + Durable Objects + D1 SQL, HTML5 Canvas (Vanilla JS), Web Audio API  
+**Render:** Pixel-art sprite system with convex-hull collision, data-driven ship classes
 
 ---
 
-## 1. Visión General del Juego
+## 1. Core Architecture
 
-**SPEAKERDUST** es un videojuego de combate espacial multijugador en tiempo real con dinámicas inspiradas en la guerra naval clásica (inercia pesada, posicionamiento y gestión de calor). Los jugadores toman el papel de capitanes espaciales integrados en flotas rivales (**Equipo Rojo** o **Equipo Azul**) que deben cooperar para repeler oleadas de la flota enemiga de la IA, al mismo tiempo que compiten por el dominio estratégico de puntos de control clave ubicados en un mapa bidimensional.
+### 1.1 Server (Cloudflare Durable Object: `GameRoom`)
 
-### Pilares de Diseño
-1. **Física de Combate Inercial (Naval Espacial):** Las naves se desplazan usando mecánicas de fricción espacial, masa pesada y retroceso físico de armamento. No es un shooter instantáneo (twitch shooter); requiere planeación del rumbo.
-2. **Dominio de Objetivos y Zonas:** Controlar puntos en el mapa no es opcional. Las zonas capturadas otorgan reparaciones vitales, enfriamiento de armas rápido, regeneración de escudos y puntos de victoria.
-3. **Cooperación y Escalamiento de Clases:** Naves que van desde ágiles corbetas de exploración hasta colosales acorazados de batalla cooperan en un entorno PvE/PvP dinámico donde las oleadas de enemigos crecen exponencialmente.
+Each multiplayer session runs in an isolated Durable Object instance at the edge. The server is authoritative — it runs physics, validates all inputs, and broadcasts state.
 
----
+**Files:**
+- `src/infrastructure/GameRoom.ts` — Durable Object class, message dispatch, game tick loop
+- `src/infrastructure/network/validator.ts` — input sanitization (whitelist of allowed message types)
+- `src/features/physics/playerSystem.ts` — player ship lifecycle, damage, collision
+- `src/features/ai/enemySystem.ts` — AI fleet spawning, movement, targeting
+- `src/features/combat/combatSystem.ts` — shot validation, projectile lifecycle
+- `src/core/combat/projectiles.ts` — bullet/missile/beam/mine simulation, hit detection
 
-## 2. Mecánicas del Sistema de Combate y Vuelo
+**Tick Loop** (`gameTick` at `TICK_MS = 33ms`, ~30 Hz):
+1. Process queued player inputs (movement, shooting, class change)
+2. Run AI enemy decisions (target acquisition, movement, firing)
+3. Update projectile positions and check ship collisions (two-phase: bounding circle → SAT polygon)
+4. Update control zone capture progress
+5. Apply zone bonuses (heat dissipation, shield regen, repair)
+6. Check death / respawn conditions
+7. Broadcast `tick` payload to all connected WebSocket clients
 
-### 2.1 Movimiento y Controles de Vuelo
-El movimiento simula una nave en agua o atmósfera pesada usando vectores de aceleración e inercia:
-*   **Rotación Táctica:** El jugador apunta la nave girando suavemente hacia la dirección del cursor del ratón (`angle` y `targetAngle`).
-*   **Empuje (Thrust & Strafe):** Controlado con teclado (`WASD` / Flechas). El empuje frontal (`inputForward`) empuja la nave en el eje de su ángulo actual. El empuje lateral (`inputStrafe`) desplaza la nave perpendicularmente para maniobras de esquiva.
-*   **Fricción Espacial (Drag):** Las naves pierden velocidad progresivamente de acuerdo con su factor de resistencia (`drag`). Su velocidad máxima real está limitada (`maxSpeed`).
-*   **Sobretensión del Motor (Engine Surge / Boost):** Activado presionando `Shift` o `Clic Derecho`. Otorga un impulso instantáneo de velocidad de gran alcance (`impulse = 1.2 / mass`).
-    *   **Costo:** 34 unidades de energía (el máximo es 100).
-    *   **Regeneración Base:** 0.38 unidades por tick.
-    *   **Enfriamiento de Propulsor:** 120 ticks (aprox. 4 segundos).
+### 1.2 Client (Vanilla JS + HTML5 Canvas)
 
-### 2.2 Física de Límites de Mapa y Colisiones
-*   **Límites del Mundo:** El mapa mide $1200 \times 800$ píxeles. Si una nave choca contra los bordes, su posición se fija en el margen exterior y se aplica un rebote físico atenuado (`vx *= -0.22` o `vy *= -0.22`).
-*   **Colisiones entre Naves:** Al colisionar naves aliadas/enemigas, se resuelven empujes de penetración basados en su masa relativa y posición. Si la velocidad relativa supera el umbral de daño por impacto (`5.8`), ambas naves reciben daño estructural por impacto físico.
+The client is a thin renderer with input prediction. It receives full state snapshots every tick and interpolates between them.
 
-### 2.3 Capas de Daño y Blindaje
-Las naves de Speakerdust poseen tres capas jerárquicas de protección que se mitigan en secuencia:
-1.  **Escudo de Energía (Shield):** El escudo absorbe todo el daño de un proyectil estándar a costa de perder una carga (`shield -= 1`). Si el escudo es impactado, entra en retraso de recarga (`SHIP_SHIELD_REGEN_DELAY = 150` ticks). Tras este tiempo, regenera una carga cada `SHIP_SHIELD_REGEN_INTERVAL = 190` ticks.
-2.  **Blindaje de Placas (Armor):** Si no hay escudo, el blindaje mitiga el daño del proyectil absorbiendo el 50% redondeado hacia arriba (`absorbed = ceil(damage * 0.5)`). El daño restante atraviesa al casco. Ciertas armas (como el Railgun) ignoran el blindaje (perforantes).
-3.  **Integridad Estructural (Hull HP):** La salud base de la nave. Si el casco llega a 0, la nave explota (`alive = false`).
-*   **Marcos de Invencibilidad (iFrames):** Al recibir daño, la nave entra en un estado temporal inmune a daños para evitar la muerte instantánea:
-    *   Impactos de proyectil al casco/armadura: 10 ticks.
-    *   Impactos de proyectil al escudo: 14 ticks.
-    *   Colisión física: 7-8 ticks.
+**Files:**
+- `client/src/game.ts` — main loop (render, input, UI), ship drawing, class selector GUI
+- `client/src/networkManager.ts` — WebSocket lifecycle, message dispatch, state sync
+- `client/src/renderer/renderer.ts` — `createPixelShipRenderer` (sprite blitting with palette swapping)
+- `client/src/particleSystem.ts` — particle explosions, muzzle flashes
+- `client/src/audioManager.ts` — procedural Web Audio API synthesis (no audio files)
+- `client/src/camera.ts` — screen shake, viewport tracking
+- `client/src/uiManager.ts` — HUD elements, game-over overlay, admin panel
 
----
+### 1.3 Shared Library (`@speakerdust/shared`)
 
-## 3. Clases de Naves de Jugador
+Type definitions and pure functions used by both server and client.
 
-Los jugadores pueden pilotar y reaparecer con diferentes clases de naves espaciales, cada una con un rol diferenciado en el campo de batalla:
-
-| Clase | Nombre Comercial | Rol del Diseño | HP Máx | Escudo | Armadura | Masa | Drag (Fricción) | Vel. Máx | Thrust (Fuerza) | Strafe (Fuerza) | Turn Rate | Ranuras de Arma |
-| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **corvette** | Scout Corvette | Escolte y exploración | 5 | 2 | 1 | 1.0 | 0.982 | 3.60 | 0.220 | 0.080 | 0.085 | Naval Cannon, Autocannon, Torpedo, Railgun |
-| **destroyer** | Destroyer | Combate de línea | 8 | 1 | 3 | 1.6 | 0.988 | 2.70 | 0.160 | 0.035 | 0.055 | Naval Cannon, Autocannon, Torpedo, EMP Launcher |
-| **missile_frigate** | Missile Frigate | Presión a distancia | 7 | 1 | 2 | 1.45 | 0.987 | 2.90 | 0.170 | 0.040 | 0.060 | Guided Missile, Torpedo, Autocannon, EMP Launcher |
-| **cruiser** | Cruiser | Control de zona | 11 | 2 | 4 | 2.2 | 0.991 | 2.15 | 0.120 | 0.020 | 0.043 | Plasma Broadside, Naval Cannon, Energy Bomb, Railgun |
-| **battlecruiser** | Battlecruiser | Persecución pesada | 14 | 2 | 5 | 2.7 | 0.992 | 1.95 | 0.105 | 0.015 | 0.036 | Railgun, Naval Cannon, Guided Missile, Plasma Broadside |
-| **battleship** | Battleship | Artillería dominante | 18 | 2 | 7 | 3.4 | 0.994 | 1.55 | 0.080 | 0.008 | 0.027 | Naval Cannon, Railgun, Plasma Broadside, Energy Bomb |
-| **dreadnought** | Dreadnought | Ancla de la flota | 26 | 3 | 10 | 4.6 | 0.996 | 1.15 | 0.055 | 0.004 | 0.018 | Railgun, Plasma Broadside, Naval Cannon, Energy Bomb |
+**Files:**
+- `shared/src/ships/ShipClassDef.ts` — `ShipClassDef` interface (physics, stats, AI, explosion, rendering)
+- `shared/src/ships/shipClasses.ts` — data definitions for all 7 ship classes
+- `shared/src/sprite/spriteCollision.ts` — `hullFromPixels` (convex hull via monotone chain), `satOverlap`, `circlePolyOverlap`, `pointInPoly`
+- `shared/src/physics/shipPhysics.ts` — `ShipPhysics` engine class (acceleration, drag, turning)
+- `shared/src/weapons/weaponDefs.ts` — weapon stat definitions
 
 ---
 
-## 4. Sistema de Armas y Balística
+## 2. Ship Class System (Data-Driven)
 
-### 4.1 Sistema de Disipación de Calor y Retroceso
-*   **Calor del Arma (Heat):** Cada disparo genera calor acumulado (`weaponHeat`). Al superar el límite `SHIP_HEAT_LIMIT = 100`, la nave puede continuar disparando acumulando un buffer de calor de seguridad (máximo 140), tras el cual el arma se bloquea por sobrecalentamiento. El calor se disipa pasivamente a una velocidad de `0.55` unidades por tick.
-*   **Retroceso Físico (Recoil):** Disparar genera una fuerza de empuje opuesta al vector de disparo (`impulse = recoil / mass`), reduciendo la velocidad de avance de la nave o desplazándola hacia atrás.
-*   **Modo de Disparo Cargado (Carga y Telégrafo):** Ciertas armas (como el Railgun o Plasma Broadside) no disparan de forma instantánea. Tienen un retardo de carga (`chargeTicks`). Al activarse, envían una alerta visual al resto de jugadores en red mostrando la trayectoria o el área de impacto (`telegraphColor`) antes de liberar los proyectiles.
+All ship classes are defined entirely in data — zero hardcoded `if (shipClass === "...")` blocks.
 
-### 4.2 Especificaciones del Armamento
+### 2.1 `ShipClassDef` Interface (`ShipClassDef.ts`)
 
-| Identificador | Nombre en Interfaz | Daño | Cooldown | Calor | Velocidad | Rango de Vida | Radio Proyectil | Retroceso | Radio Splash | Ticks Carga | Arco de Disparo | Efectos Especiales / Notas |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
-| **naval_cannon** | Naval Cannon | 3 | 54 | 24 | 8.2 | 120 | 8 | 1.15 | 28 | 0 | Frontal | Proyectil de artillería de alto impacto con daño de área leve. |
-| **autocannon** | Autocannon | 1 | 12 | 7 | 10.5 | 65 | 4 | 0.25 | 0 | 0 | Frontal | Disparo continuo antiaéreo rápido y de baja dispersión. |
-| **plasma_broadside** | Plasma Broadside | 2 | 82 | 34 | 5.4 | 95 | 10 | 0.70 | 42 | 18 | Lateral | Dispara ráfagas dobles hacia babor y estribor (laterales). |
-| **railgun** | Railgun | 6 | 104 | 42 | 18.0 | 48 | 5 | 1.75 | 14 | 24 | Frontal | Disparo cargado de alta velocidad. Perfora el blindaje directamente. |
-| **torpedo** | Torpedo | 7 | 96 | 20 | 3.4 | 190 | 12 | 0.45 | 72 | 0 | Frontal | Autoguiado lento (`turnRate = 0.018`), daño y splash destructivos. |
-| **guided_missile** | Guided Missile | 4 | 72 | 26 | 5.7 | 150 | 9 | 0.35 | 48 | 0 | Omnidireccional | Proyectil con alta capacidad de rastreo (`turnRate = 0.055`). |
-| **energy_bomb** | Energy Bomb | 4 | 90 | 32 | 4.0 | 84 | 11 | 0.50 | 92 | 8 | Omnidireccional | Mina espacial detonante que explota al agotar su vida útil. |
-| **emp_launcher** | EMP Launcher | 1 | 76 | 24 | 6.4 | 100 | 9 | 0.30 | 58 | 0 | Omnidireccional | Aplica efecto de parálisis EMP (`empTicks = 80`) al objetivo. |
-
----
-
-## 5. Dinámica de Objetivos y Zonas de Captura
-
-El combate gira en torno a tres puntos estratégicos fijos en el mapa. Cada zona puede estar en posesión de los jugadores (Equipo Rojo o Azul), las naves enemigas de la IA, o permanecer Neutral.
-
-```mermaid
-graph TD
-    A[Neutral] -- Presión de Aliados > 55% --> B[Aliado RED / BLUE]
-    A -- Presión de IA > 55% --> C[Enemigo AI]
-    B -- Presión de IA o Rival --> A
-    C -- Presión de Jugadores --> A
+```typescript
+interface ShipClassDef {
+  physics: ShipConfig;      // mass, thrust, drag, turn rate
+  stats: ShipGameplayStats; // HP, shield, armor, weapon slots, ideal range
+  ai: ShipAI;               // aimJitter, leadMul, aimNoise, seek/retreat/orbit params
+  explosion: ExplosionConfig; // colors, count, size, scale, shake intensity/radius
+  nearAudioDistance: number;  // proximity audio trigger distance (0 = off)
+  paletteKey: "scout" | "cruiser" | "capital";
+  glowColor: string;          // engine/highlight color
+  pixels: Uint8Array;         // sprite pixel data
+  w: number; h: number;       // sprite dimensions
+  attachments: Attachment[];  // engine/weapon mount points
+  hull: Hull;                 // convex hull vertices + bounding radius
+  defaultLoadout: Record<string, WeaponKind>;
+}
 ```
 
-### 5.1 Mecánica de Captura
-*   **Detección de Presión:** Si una nave activa está dentro del radio del objetivo, genera presión de captura según su distancia al centro:
-    $$\text{Presión} = \left(1 - \frac{\text{Distancia}}{\text{Radio de la Zona}}\right) \times 0.72 \times \text{Escala de Presión de Zona}$$
-*   **Conflicto y Decaimiento:** Si naves aliadas y enemigas ocupan la misma zona, las presiones se restan. Si no hay nadie en la zona, el progreso capturado decae pasivamente a una tasa de `0.28` por tick.
-*   **Límite de Captura:** Para que una facción sea considerada propietaria de la zona, debe llevar su barra de progreso a un umbral mínimo del `55%` (`ZONE_CAPTURE_THRESHOLD`).
+### 2.2 Seven Ship Classes
 
-### 5.2 Estructuras de Objetivos Activos
+| ID | Role | HP | Mass | Speed | AI Lead | Palette |
+|----|------|----|------|-------|---------|---------|
+| corvette | Fast scout | 5 | 1.0 | 30 | 14 | scout |
+| destroyer | Line combatant | 8 | 1.6 | 25 | 14 | cruiser |
+| missile_frigate | Standoff pressure | 7 | 1.45 | 23 | 14 | cruiser |
+| cruiser | Area control | 11 | 2.3 | 20 | 14 | cruiser |
+| battlecruiser | Heavy pursuit | 14 | 2.8 | 17 | 14 | capital |
+| battleship | Dominant artillery | 18 | 3.4 | 14 | 22 | capital |
+| dreadnought | Fleet anchor | 26 | 4.6 | 11 | 22 | capital |
 
-1.  **Refinería de Energía (ENERGY REFINERY):**
-    *   **Ubicación:** Centro del Mapa ($600, 400$) | **Radio:** 150 píxeles.
-    *   **Bonificaciones al Propietario:** Aceleración drástica de disipación de calor de armas (`+0.22/tick`) y regeneración de escudos impulsada.
-2.  **Relé de Comunicaciones (COMMS RELAY):**
-    *   **Ubicación:** Cuadrante Izquierdo Superior ($300, 240$) | **Radio:** 132 píxeles.
-    *   **Bonificaciones al Propietario:** Facilidad de captura masiva debido a su alta tasa de influencia de presión de captura (`x1.25`).
-3.  **Plataforma de Recursos (RESOURCE PLATFORM):**
-    *   **Ubicación:** Cuadrante Derecho Inferior ($888, 560$) | **Radio:** 132 píxeles.
-    *   **Bonificaciones al Propietario:** Incremento constante de puntaje del jugador y autoreparación lenta del casco.
+### 2.3 Player Class Switching
 
-### 5.3 Tabla de Bonificaciones por Ocupación (Objective Bonuses)
-
-| Tipo de Objetivo | Enfriamiento de Calor | Reg. Energía Boost | Mitigación Shield Delay | Ticks Auto-Reparación | Ticks Puntos (+1 Score) | Escala Presión Captura |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **resource_platform** | +0.05 | +0.05 | -0 | *Sin Recarga* | Cada 14 ticks | 1.05 |
-| **comms_relay** | +0.04 | +0.04 | -0 | *Sin Recarga* | Cada 18 ticks | 1.25 |
-| **energy_refinery** | +0.22 | +0.24 | -1 tick | *Sin Recarga* | Cada 22 ticks | 1.00 |
-| **naval_base** | +0.08 | +0.08 | -2 ticks | Cada 180 ticks | Cada 20 ticks | 1.00 |
-| **radar_station** | +0.06 | +0.06 | -0 | *Sin Recarga* | Cada 18 ticks | 1.15 |
-| **supply_convoy** | +0.10 | +0.16 | -1 tick | Cada 240 ticks | Cada 12 ticks | 1.00 |
+- GUI at bottom of screen: 7 clickable buttons showing class labels with glow-color borders
+- Keyboard: `[` / `]` to cycle forward/backward
+- Client sends `{ type: "changeClass", shipClass: "..." }`
+- Server validates class exists (`SHIP_CLASSES[cls]`), guards against same-class, calls `respawnPlayer(ship)`, sends `{ type: "respawned" }` + `{ type: "weapon_changed" }`
 
 ---
 
-## 6. Inteligencia Artificial (La Flota Enemiga)
+## 3. Physics & Movement
 
-La Flota Enemiga es controlada de forma centralizada por el servidor. Su objetivo es cazar capitanes de jugadores y disputar las zonas de control del mapa.
+### 3.1 Ship Physics Engine (`ShipPhysics`)
 
-### 6.1 Comportamiento y Algoritmos de Navegación de IA
-*   **Caza Activa:** Si hay jugadores con vida dentro del radio de alcance del sensor de la IA ($860$ píxeles), la nave enemiga selecciona al capitán más cercano.
-*   **Puntería Predictiva (Leading Targets):** El sistema de tiro de la IA calcula el vector de velocidad del jugador para apuntar por delante del curso de vuelo del jugador:
-    *   Naves estándar: Predicen la posición del jugador a 18 ticks en el futuro.
-    *   Acorazados y Dreadnoughts: Predicen la posición a 28 ticks en el futuro (debido al tiempo de viaje de sus armas pesadas).
-*   **Navegación Táctica de Flotas:**
-    *   *Órbita Dinámica:* Los enemigos orbitan al jugador basándose en su clase e índice de formación para dispersar el fuego de respuesta del jugador.
-    *   *Evitación de Rangos:* Si un jugador se acerca demasiado, las clases ligeras retroceden activamente (`retreat`), mientras que si el jugador se aleja de su rango ideal de combate (`idealRange`), la nave acelera para cerrar la distancia (`seek`).
-*   **Captura de Zonas Autónoma:** Si no hay capitanes jugadores en el sensor de los enemigos, la IA busca la zona de control más cercana del mapa para disputar su control y comenzar su captura.
-
-### 6.2 Clases de Naves Enemigas e IA
-
-| Tipo de IA | Clase Asociada | Vida Base | Multiplicador Recarga Arma | Rango Ideal | Arma Preferida | Valor en Puntos |
-| :--- | :--- | :---: | :---: | :---: | :--- | :---: |
-| **corvette** | corvette | $5 + \text{Bonus Wave}$ | 0.85 | 250 px | Autocannon | 120 pts |
-| **destroyer** | destroyer | $8 + \text{Bonus Wave}$ | 1.00 | 330 px | Naval Cannon | 260 pts |
-| **frigate** | missile_frigate | $6 + \text{Bonus Wave}$ | 1.08 | 410 px | Guided Missile | 320 pts |
-| **cruiser** | cruiser | $12 + \text{Bonus Wave}$ | 1.12 | 430 px | Plasma Broadside | 520 pts |
-| **battleship** | battleship | $21 + \text{Bonus Wave}$ | 1.28 | 520 px | Railgun | 900 pts |
-| **dreadnought** | dreadnought | $34 + \text{Bonus Wave}$ | 1.45 | 580 px | Railgun | 1600 pts |
-
-*   **Bonus de Vida por Oleada:** La dificultad escala incrementando la salud de todos los enemigos en $+1$ HP por cada 4 oleadas transcurridas (`hpBonus = floor((wave - 1) / 4)`).
-*   **Composición de Oleadas:** El número de enemigos generados por oleada aumenta dinámicamente según la siguiente fórmula:
-    *   *Corvetas:* $\min(2 + \lceil\text{wave} \times 0.8\rceil, 12)$
-    *   *Destructores:* $\min(\max(1, \lfloor\text{wave} / 2\rfloor), 7)$
-    *   *Fragatas:* $\min(\max(0, \lfloor(\text{wave} - 2) / 3\rfloor), 5)$
-    *   *Cruceros:* $\min(\max(0, \lfloor(\text{wave} - 4) / 4\rfloor), 4)$
-    *   *Acorazados:* $\min(\max(0, \lfloor(\text{wave} - 7) / 5\rfloor), 2)$
-    *   *Dreadnoughts:* $1$ unidad (solo en oleadas $\ge 12$ que sean múltiplos de 4).
-
----
-
-## 7. Arquitectura Técnica e Infraestructura de Servidor
-
-El juego está diseñado con una arquitectura moderna de computación en el borde (Edge Computing) de Cloudflare, optimizada para juegos multijugador asíncronos y de sesión rápida.
+The server runs a dedicated physics engine per ship:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                              Navegador Web                             │
-│       (HTML5 Canvas - Renderer @ ~30FPS | Web Audio API - Sonido)      │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-                                    │ WebSockets (Mensajes JSON)
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                         Cloudflare Workers (Borde)                     │
-│    (Valida rutas de salas /room/<id> e inicia enlace de socket)        │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-                                    │ Durable Object Stub
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                    Cloudflare Durable Object: GameRoom                 │
-│      - Ciclo físico a 33ms (TICK_MS)                                   │
-│      - Motor de colisiones y balística                                 │
-│      - Base de Datos D1 SQL (users / rooms)                            │
-│      - Cola de Persistencia de estado en almacenamiento local KV       │
-└────────────────────────────────────────────────────────────────────────┘
+acceleration = input * thrustForce / mass
+velocity += acceleration - velocity * linearDrag
+position += velocity
+angularVelocity = approach(targetAngle, angle, turnRate)
 ```
 
-### 7.1 Durable Objects como Servidores de Sala (`GameRoom`)
-Cada partida multijugador está administrada por una instancia física aislada y persistente en el borde de Cloudflare llamada `GameRoom`.
-*   **Frecuencia del Servidor (Tick Rate):** Corre un bucle físico central regulado por un temporizador a `33 milisegundos` (aprox. 30 actualizaciones por segundo).
-*   **Persistencia Activa:** El estado completo del juego (naves, zonas, oleada, ticks) se serializa en segundo plano y se guarda de manera segura en el almacenamiento de Durable Objects cada 30 ticks (aproximadamente cada segundo) si hay cambios de estado.
-*   **Seguridad y Control de Tasa (Rate Limiting):**
-    *   *Movimiento:* Máximo 1 actualización por cada 16ms para mitigar exploits de velocidad (desconexiones de red forzadas).
-    *   *Disparo:* Restringido dinámicamente al tick actual de juego para evitar inyección de ráfagas automáticas ilegales.
-    *   *Propulsión:* Tasa máxima de boost de 100ms en red.
+- **Thrust** (`inputForward`): accelerates along ship heading
+- **Strafe** (`inputStrafe`): accelerates perpendicular to heading
+- **Turn** (`inputTurn` or auto-aim toward `targetAngle`): angular velocity with `turnAccel` and `angularDrag`
+- **Boost** (`Shift` / right-click): impulse of `1.2 / mass` in current thrust direction, costs 34 energy, 120-tick cooldown
+- **Drag**: determines stopping distance; heavy ships (dreadnought: 0.12) coast far, light ships (corvette: 1.2) stop quickly
 
-### 7.2 Base de Datos SQL (Cloudflare D1)
-El entorno está enlazado a una base de datos D1 local SQL con la siguiente estructura de tablas relacionales:
-*   **Tabla `users`:** Registra el perfil del capitán (User ID persistente, Username en interfaces, nivel de cuenta y monedas acumuladas en juego).
-*   **Tabla `rooms`:** Guarda la información de salas de batalla activas creadas (Room ID, Nombre, Estado de privacidad y UID del creador).
+### 3.2 Collision Detection (Two-Phase)
 
-### 7.3 Generación de Audio Procedural e Interactivo
-El cliente de Speakerdust no descarga archivos de música ni efectos MP3/WAV. En su lugar, utiliza **Web Audio API** para sintetizar sonido dinámico interactivo directamente en el procesador del cliente:
-*   **Tono de Propulsión (Boost):** Onda de tipo `square` barriendo de 180Hz a 90Hz durante 0.08 segundos.
-*   **Cañones y Railguns:** Ondas cuadradas a 880Hz que barren exponencialmente hasta 1360Hz para simular el impacto ultrasónico del disparo.
-*   **Armas de Plasma / Autocañones:** Ondas triangulares triples que oscilan entre 620Hz y 1040Hz.
-*   **Misiles y Torpedos:** Mezcla sibilante de ondas de sierra (`sawtooth`) de baja frecuencia con barrido de decaimiento en tiempo real.
-*   **Explosiones y Colisiones:** Ruido blanco modelado digitalmente mediante un filtro pasabanda (`bandpass`) centrado a 520Hz.
+**Bullet / Missile → Ship** (`shipHitByCircle` in `projectiles.ts`):
+1. **Broad phase**: distance between centers < `hull.radius + bullet.radius`? (bounding circle test — fast reject)
+2. **Narrow phase**: `circlePolyOverlap(circle, bulletR, transformedHullVerts)` — SAT-based circle-vs-convex-polygon using the sprite's exact hull vertices
+
+**Ship → Ship** (`resolveShipCollision` in `playerSystem.ts`):
+- Full SAT (`satOverlap`) on both ships' transformed hull vertices
+- Resolves penetration by mass-weighted positional push
+- Applies collision damage if relative velocity > threshold (`5.8`)
+
+### 3.3 Hitbox Generation (`hullFromPixels`)
+
+At build time (`shipClasses.ts`), each sprite's non-zero pixels feed into a **Monotone Chain (Andrew's algorithm)** convex hull algorithm. The resulting polygon is stored as `hull.vertices`. A bounding radius (`hull.radius`) is computed as the max distance from center to any vertex (used only for broad-phase optimization).
 
 ---
 
-## 8. Controles y Consola de Administración
+## 4. Combat System
 
-El juego incorpora un panel oculto de administración de red (invocado presionando `Ctrl + Shift + A` e introduciendo la contraseña `ADMIN_KEY` del entorno del servidor) que permite las siguientes operaciones directas de depuración y balanceo:
-1.  **Reset All:** Fuerza una reaparición de todos los capitanes jugadores con valores iniciales y limpia las puntuaciones a cero.
-2.  **Clear Hostiles:** Elimina todas las naves de la IA activas en el mapa de juego para concluir una oleada conflictiva.
-3.  **Set Fleet Wave:** Modifica el nivel de la oleada actual e inmediatamente genera una flota enemiga con la composición y fuerza correspondiente a ese nivel.
-4.  **Force Team Selection:** Modifica las asignaciones del capitán al Equipo Rojo, Azul o lo posiciona como Espectador libre.
-5.  **Kick Captain:** Desconecta forzosamente a un cliente problemático enviando una señal de socket cerrada con estado 1000.
+### 4.1 Damage Layers
+
+1. **Shield**: absorbs 1 hit per charge; `shieldRegenDelay` ticks after last hit, then regenerates 1 charge every `shieldRegenInterval` ticks
+2. **Armor**: absorbs `ceil(damage * 0.45)` points; armor-piercing weapons (railgun) bypass
+3. **Hull HP**: structural integrity; 0 = dead
+
+Weapons and their effects are defined in `weaponDefs.ts` with parameters: damage, cooldown, heat cost, velocity, lifetime, projectile radius, recoil, splash radius, charge ticks, fire arc, and special effects (EMP, piercing, homing).
+
+### 4.2 Heat System
+
+Each shot adds `weaponHeat`. Heat passively dissipates at `stats.heatCoolRate + zoneBonus` per tick. If heat exceeds `SHIP_HEAT_LIMIT = 100`, the weapon can still fire up to a safety buffer of 140; beyond that the weapon jams until heat dissipates.
+
+### 4.3 Explosions (Data-Driven)
+
+Explosion is a single particle burst per class (no multi-stage setTimeout). The client receives `{ type: "explosion", x, y, kind: shipClass }`, looks up `SHIP_CLASSES[kind].explosion`, and emits particles with class-specific colors, count, size, scale, and optional screen shake.
+
+---
+
+## 5. AI Enemy Fleet (`enemySystem.ts`)
+
+All AI behavior is driven by `ShipClassDef.ai`:
+
+```typescript
+interface ShipAI {
+  aimJitter: number;    // reaction time randomness (ticks)
+  leadMul: number;      // target leading multiplier (ticks)
+  aimNoise: number;     // angular spread on final aim
+  maxAimError: number;  // firing tolerance
+  seekSpeed: number;    // approach velocity (toward ideal range)
+  retreatSpeed: number; // backpedal velocity
+  orbitPower: number;   // lateral orbit intensity
+}
+```
+
+**Decision Loop** (per AI ship, each tick):
+1. **Target acquisition**: scan for nearest player within 860px; if none found, move toward nearest control zone
+2. **Movement**: seek/retreat based on distance from `idealRange`; orbit around target using phase from wave index + formation index + maneuver timer
+3. **Firing**: check distance, aim with prediction (leadMul), apply noise, check maxAimError vs actual aim delta
+4. **Wave scaling**: enemy HP scales as `+1 HP per 4 waves`; spawn count follows a crescendo formula per class type
+
+---
+
+## 6. Objectives & Zone Control
+
+Three fixed control points on the map. Each zone has a capture progress bar (0–100%). Progress increases when ships are inside the zone radius, weighted by proximity. If both teams occupy the same zone, their pressures cancel. Captured zones grant passive bonuses:
+
+| Zone | Bonus |
+|------|-------|
+| Energy Refinery (center) | +0.22 heat dissipation, +0.24 boost regen, -1 shield delay tick |
+| Comms Relay (top-left) | 1.25x capture pressure scale |
+| Resource Platform (bottom-right) | +1 score every 14 ticks |
+
+Zone progress and ownership are broadcast in every tick payload, rendered as colored rings in `drawObjectives()`.
+
+---
+
+## 7. Rendering Pipeline
+
+### 7.1 Sprite System
+
+Each ship has a pixel grid (2D array of palette indices) converted to a `Uint8Array` at build time. The client renderer (`createPixelShipRenderer`) maps palette indices to colors using per-class palette lookups:
+- `PAL_SCOUT` — small ships (corvette)
+- `PAL_CRUISER_ENEMY` — medium ships (destroyer, frigate, cruiser)
+- `PAL_CAPITAL` — large ships (battlecruiser, battleship, dreadnought)
+
+Player ships use a procedurally generated palette from their HSL color `(hue, 80%, 65%)`.
+
+### 7.2 Drawing Order (per frame)
+
+1. `drawBackground()` — starfield parallax
+2. `drawObjectives()` — zone rings with ownership colors
+3. `drawBullets()` — projectile sprites
+4. `drawEnemies()` — AI ships with glow, shadow, HP bar (all data-driven from ShipClassDef)
+5. `drawPlayers()` — player ships with team colors, weapon HUD
+6. `drawParticles()` — explosion particles, engine trails
+7. `drawClassSelector()` — ship class GUI buttons (bottom-center, DPR-aware)
+
+### 7.3 Class Selector GUI
+
+Rendered at bottom of canvas as 7 buttons (88x20px each) with class labels. Current class is highlighted with its `glowColor` fill. Click detection uses `getBoundingClientRect` in CSS pixel coordinates, matching the DPR-scaled canvas transform.
+
+---
+
+## 8. Network Protocol
+
+### 8.1 Connection Flow
+
+1. Client generates a session token via `generateToken("player")`
+2. Connects via WebSocket: `/room/{ROOM_ID}?token={TOKEN}`
+3. Server validates token, creates player ship, sends `init` payload
+4. Server begins broadcasting `tick` payloads at ~30 Hz
+
+### 8.2 Message Types
+
+**Client → Server** (whitelist in `validator.ts`):
+- `move` — throttle, strafe, turn, aimAngle
+- `shoot` — fire current weapon
+- `switch_weapon` — cycle to next weapon slot
+- `boost` — trigger engine surge
+- `respawn` — request respawn after death
+- `changeClass` — switch ship class (triggers respawn)
+- `set_team` — change team assignment
+- `chat` — quick-chat messages
+- `admin_*` — admin commands (auth required)
+
+**Server → Client**:
+- `init` — full state on connect
+- `tick` — incremental state (ships, bullets, zones, wave)
+- `player_dead` — ship destroyed
+- `respawned` — ship revived
+- `weapon_changed` — weapon slot cycled
+- `explosion` — visual/audio trigger
+- `hit` / `shield_hit` — damage feedback
+- `new_wave` — wave transition
+- `admin_authed` / `admin_godmode` / `admin_event` — admin responses
+
+### 8.3 Rate Limiting
+
+- **Move**: max 1 per 16ms
+- **Shoot**: synced to server tick (30 Hz)
+- **Boost**: max 1 per 100ms
+- **Respawn**: no limit (server validates `ship.alive`)
+
+---
+
+## 9. Audio System (Procedural)
+
+All sounds are synthesized at runtime via Web Audio API — no audio files.
+
+| Sound | Technique |
+|-------|-----------|
+| Engine boost | Square wave, 180→90Hz sweep, 0.08s |
+| Cannons/railgun | Square wave, 880→1360Hz sweep |
+| Plasma/autocannon | Triangle wave triplets, 620–1040Hz |
+| Missiles/torpedoes | Sawtooth low-frequency mix with decay |
+| Explosions | Bandpass white noise at 520Hz center |
+| Haptic (gamepad) | `vibrationActuator.playEffect("dual-rumble")`; `navigator.vibrate()` after user gesture only |
+
+---
+
+## 10. Persistence & State Recovery
+
+- State serialized every 30 ticks (~1s) via `PersistenceQueue` to Durable Object storage
+- On DO wake from hibernation, `hydrateState()` reconstructs ships, AI states, zones
+- D1 database stores `users` (profiles) and `rooms` (active session metadata)
+- Client reconnects automatically on WebSocket close (2.5s delay)
+
+---
+
+## 11. Admin Panel
+
+- Trigger: `Ctrl+Shift+A` or `F10`
+- Auth: send `admin_auth { key }` — server compares against `env.ADMIN_KEY`
+- Commands (once authenticated): reset all players, clear enemies, set wave, kick player, toggle godmode, heal all, force team change
+- Admin state persisted per-player (`ship.isAdmin`), broadcast to all clients for UI updates
+
+---
+
+## 12. Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Data-driven ship classes** | Zero special-case `if/else` on class names; all behavior from `ShipClassDef` (AI, explosion, rendering, audio) |
+| **Convex hull hitbox** | Generated from sprite pixels via monotone chain algorithm; SAT-based collision with circle pre-filter |
+| **Authoritative server** | All physics and combat logic runs server-side; client is a thin renderer |
+| **Procedural audio** | No asset downloads; sounds synthesized via Web Audio API |
+| **Durable Objects** | Each game room is an isolated, persisting edge process with in-memory state |
+| **Pixel-art with palette swapping** | Each sprite stores palette indices; player color is rendered by mapping indices to HSL-derived palette |

@@ -2,7 +2,8 @@ import type { Ship, ShipClass, AiState } from "../../core/ships/shipTypes";
 import type { ControlPoint } from "../../core/world/zones";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
-import { SHIP_HEAT_LIMIT, classStats } from "../../core/ships/shipStats";
+import { SHIP_CLASSES } from "@speakerdust/shared";
+import { SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
 import { spawnPos } from "../../core/world/mapConfig";
 import { clamp, rand, uuid, distSq, shortestAngleDelta } from "../../core/math";
 import { applyShipDamage } from "../physics/playerSystem";
@@ -14,7 +15,10 @@ function approachAngle(current: number, desired: number, maxStep: number): numbe
 
 export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Ship; ai: AiState } {
   const pos = spawnPos();
-  const stats = classStats(shipClass);
+  const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
+  const stats = def.stats;
+  const phys = def.physics;
+  const aiCfg = def.ai;
   const weapon = stats.weaponSlots[0] ?? "naval_cannon";
 
   return {
@@ -23,9 +27,9 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
       controller: "ai",
       shipClass,
       role: stats.role,
-      mass: stats.mass, turnRate: stats.turnRate,
-      drag: stats.drag, maxSpeed: stats.maxSpeed,
-      thrustForce: stats.thrustForce, strafeThrustForce: stats.strafeThrustForce,
+      mass: phys.mass, turnRate: phys.maxAngularSpeed,
+      drag: phys.linearDrag, maxSpeed: phys.maxLinearSpeed,
+      thrustForce: phys.thrustAccel, strafeThrustForce: phys.strafeAccel,
       weaponSlots: [...stats.weaponSlots],
       ...pos,
       vx: 0, vy: 0,
@@ -38,7 +42,9 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
       shootCooldown: 0, weaponHeat: 0,
       boostEnergy: 100, boostCooldown: 0, boostQueued: false,
       empTicks: 0, iFrames: 0, alive: true,
-      inputForward: 0, inputStrafe: 0,
+      inputForward: 0, inputStrafe: 0, inputTurn: 0,
+      heading: 0, angularVelocity: 0,
+      _physics: undefined,
       name: "", color: "", team: "red" as const,
       score: 0, isAdmin: false, godmode: false, inputSeq: 0,
     },
@@ -46,7 +52,7 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
       targetId: undefined,
       lastSeenPos: undefined,
       reactionTicks: Math.floor(rand(4, 12)),
-      aimJitter: shipClass === "corvette" || shipClass === "destroyer" ? 0.07 : 0.04,
+      aimJitter: aiCfg.aimJitter,
       maneuverTimer: Math.floor(rand(30, 90)),
       maneuverDir: (Math.random() < 0.5 ? -1 : 1) as -1 | 1,
       strafing: Math.random() < 0.5,
@@ -113,9 +119,9 @@ export function updateEnemyInputs(
   nearestZone: Pick<ControlPoint, "x" | "y" | "radius"> | null,
 ): void {
   if (enemy.boostCooldown > 0) enemy.boostCooldown--;
-  if (enemy.boostEnergy < 100) enemy.boostEnergy = Math.min(100, enemy.boostEnergy + classStats(enemy.shipClass).boostRegenRate);
+  if (enemy.boostEnergy < 100) enemy.boostEnergy = Math.min(100, enemy.boostEnergy + (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.boostRegenRate);
 
-  const stats = classStats(enemy.shipClass);
+  const stats = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats;
 
   let target: Ship | null = null;
   let targetDistSq = Infinity;
@@ -159,17 +165,15 @@ export function updateEnemyInputs(
     aimTargetY = nearestZone.y;
   }
 
+  const aiCfg = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).ai;
   let desiredAngle = enemy.angle;
   if (target) {
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const dist = Math.hypot(dx, dy) || 1;
 
-    const leadMul = (enemy.shipClass === "battleship" || enemy.shipClass === "dreadnought") ? 22 : 14;
-    const aimNoise = enemy.shipClass === "corvette" ? 0.09
-      : enemy.shipClass === "destroyer" ? 0.07
-        : enemy.shipClass === "missile_frigate" ? 0.06
-          : enemy.shipClass === "cruiser" ? 0.05 : 0.04;
+    const leadMul = aiCfg.leadMul;
+    const aimNoise = aiCfg.aimNoise;
 
     const predictX = target.x + target.vx * leadMul;
     const predictY = target.y + target.vy * leadMul;
@@ -220,24 +224,21 @@ export function updateEnemyInputs(
 
     const seek = dist > stats.idealRange + 90;
     const retreat = dist < stats.idealRange - 110;
-    const heavy = enemy.shipClass === "battleship" || enemy.shipClass === "dreadnought";
-    const lineShip = enemy.shipClass === "destroyer" || enemy.shipClass === "cruiser";
 
     if (seek) {
-      moveX += dirX * (heavy ? 0.45 : 0.8);
-      moveY += dirY * (heavy ? 0.45 : 0.8);
+      moveX += dirX * aiCfg.seekSpeed;
+      moveY += dirY * aiCfg.seekSpeed;
     }
     if (retreat) {
-      moveX -= dirX * (lineShip ? 0.55 : 0.35);
-      moveY -= dirY * (lineShip ? 0.55 : 0.35);
+      moveX -= dirX * aiCfg.retreatSpeed;
+      moveY -= dirY * aiCfg.retreatSpeed;
     }
 
     const orbitPhase = ai.wave * 0.35 + ai.formationIndex * 0.7 + ai.maneuverTimer * 0.06;
     const orbitSide = Math.sin(orbitPhase) >= 0 ? 1 : -1;
     const orbitAngle = enemy.targetAngle + (Math.PI / 2) * ai.maneuverDir * orbitSide;
-    const orbitPower = heavy ? 0.28 : lineShip ? 0.48 : 0.72;
-    moveX += Math.cos(orbitAngle) * orbitPower;
-    moveY += Math.sin(orbitAngle) * orbitPower;
+    moveX += Math.cos(orbitAngle) * aiCfg.orbitPower;
+    moveY += Math.sin(orbitAngle) * aiCfg.orbitPower;
 
     if (ai.strafing) {
       const strafeSide = Math.sin(orbitPhase * 1.7) >= 0 ? 1 : -1;
@@ -321,15 +322,14 @@ export function shouldEnemyFire(
 ): boolean {
   if (enemy.shootCooldown > 0 || enemy.weaponHeat >= SHIP_HEAT_LIMIT) return false;
 
-  const rangeSq = (classStats(enemy.shipClass).idealRange + 180) ** 2;
+  const def = SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!;
+  const rangeSq = (def.stats.idealRange + 180) ** 2;
   if (targetDistSq > rangeSq) {
     ai.frustration += 0.2;
     return false;
   }
 
-  const maxAimError =
-    enemy.shipClass === "dreadnought" || enemy.shipClass === "battleship" ? 0.26 :
-      enemy.shipClass === "cruiser" ? 0.30 : 0.34;
+  const maxAimError = def.ai.maxAimError;
 
   return Math.abs(aimErrorRad) <= maxAimError;
 }
@@ -369,7 +369,7 @@ export function applyBulletSplash(
     const result = applyShipDamage(enemy, finalDamage, false, false);
 
     if (result.dead) {
-      const score = classStats(enemy.shipClass).score;
+      const score = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.score;
       kills.push({ enemyId: enemy.id, x: enemy.x, y: enemy.y, shipClass: enemy.shipClass, score });
     }
   }

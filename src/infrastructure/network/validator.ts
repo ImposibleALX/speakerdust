@@ -1,7 +1,7 @@
 const MAX_MESSAGE_BYTES = 10240;
 
 const VALID_MESSAGE_TYPES = new Set([
-  "set_team", "respawn", "boost", "move", "switch_weapon", "shoot", "chat",
+  "set_team", "respawn", "boost", "move", "switch_weapon", "shoot", "chat", "changeClass",
 ]);
 
 const VALID_ADMIN_COMMANDS = new Set([

@@ -2,7 +2,20 @@ import type { Controller, Ship } from "../ships/shipTypes";
 import type { BulletKind, StatusEffect, WeaponKind } from "./weaponStats";
 import { WEAPON_STATS } from "./weaponStats";
 import { distSq, shortestAngleDelta, uuid } from "../math";
-import { collisionRadiusFor } from "../ships/shipStats";
+import { SHIP_CLASSES, checkBulletHit, checkBeamHit } from "@speakerdust/shared";
+import type { CollisionGrid } from "@speakerdust/shared";
+
+function shipGrid(ship: Ship): CollisionGrid {
+  const def = SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!;
+  return {
+    pixels: def.pixels,
+    w: def.w,
+    h: def.h,
+    centerX: def.spriteCenter.x,
+    centerY: def.spriteCenter.y,
+    boundingRadius: def.boundingRadius,
+  };
+}
 
 export type ProjectileKind = "bullet" | "beam" | "missile" | "mine";
 
@@ -43,6 +56,7 @@ export interface PublicProjectile {
   angle: number;
   kind: string;
   radius: number;
+  spawnTick: number;
 }
 
 export abstract class Projectile {
@@ -90,6 +104,7 @@ export class BulletProjectile extends Projectile {
   splashRadius: number;
   statusEffect?: StatusEffect;
   detonateAtLife?: number;
+  spawnTick: number;
 
   private _alive = true;
 
@@ -109,6 +124,7 @@ export class BulletProjectile extends Projectile {
     splashRadius: number,
     statusEffect?: StatusEffect,
     detonateAtLife?: number,
+    spawnTick: number = 0,
   ) {
     super(id, ownerId, ownerController, x, y, angle, radius);
     this.vx = vx;
@@ -119,6 +135,7 @@ export class BulletProjectile extends Projectile {
     this.splashRadius = splashRadius;
     this.statusEffect = statusEffect;
     this.detonateAtLife = detonateAtLife;
+    this.spawnTick = spawnTick;
   }
 
   get alive(): boolean { return this._alive; }
@@ -156,8 +173,7 @@ export class BulletProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      const hitRadius = collisionRadiusFor(ship) + this.radius;
-      if (distSq(this, ship) >= hitRadius * hitRadius) continue;
+      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius)) continue;
 
       this._alive = false;
       hits.push({
@@ -190,6 +206,7 @@ export class BulletProjectile extends Projectile {
       angle: this.angle,
       kind: this.bulletKind,
       radius: this.radius,
+      spawnTick: this.spawnTick,
     };
   }
 }
@@ -206,6 +223,7 @@ export class MissileProjectile extends Projectile {
   turnRate: number;
   targetId?: string;
   speed: number;
+  spawnTick: number;
 
   private _alive = true;
 
@@ -226,6 +244,7 @@ export class MissileProjectile extends Projectile {
     turnRate: number,
     targetId?: string,
     speed?: number,
+    spawnTick: number = 0,
   ) {
     super(id, ownerId, ownerController, x, y, angle, radius);
     this.vx = vx;
@@ -237,6 +256,7 @@ export class MissileProjectile extends Projectile {
     this.turnRate = turnRate;
     this.targetId = targetId;
     this.speed = speed ?? Math.hypot(vx, vy);
+    this.spawnTick = spawnTick;
   }
 
   get alive(): boolean { return this._alive; }
@@ -276,8 +296,7 @@ export class MissileProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      const hitRadius = collisionRadiusFor(ship) + this.radius;
-      if (distSq(this, ship) >= hitRadius * hitRadius) continue;
+      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius)) continue;
 
       this._alive = false;
       hits.push({
@@ -310,6 +329,7 @@ export class MissileProjectile extends Projectile {
       angle: this.angle,
       kind: this.bulletKind,
       radius: this.radius,
+      spawnTick: this.spawnTick,
     };
   }
 }
@@ -322,6 +342,7 @@ export class BeamProjectile extends Projectile {
   duration: number;
   bulletKind: WeaponKind;
   splashRadius: number;
+  spawnTick: number;
 
   private _alive = true;
 
@@ -338,6 +359,7 @@ export class BeamProjectile extends Projectile {
     duration: number,
     bulletKind: WeaponKind,
     splashRadius: number,
+    spawnTick: number = 0,
   ) {
     super(id, ownerId, ownerController, x, y, angle, radius);
     this.length = length;
@@ -345,6 +367,7 @@ export class BeamProjectile extends Projectile {
     this.duration = duration;
     this.bulletKind = bulletKind;
     this.splashRadius = splashRadius;
+    this.spawnTick = spawnTick;
   }
 
   get alive(): boolean { return this._alive; }
@@ -367,14 +390,8 @@ export class BeamProjectile extends Projectile {
         if (ship.team === "spectator") continue;
       }
 
-      const t = ((ship.x - this.x) * cosA + (ship.y - this.y) * sinA) / (this.length || 1);
-      if (t < 0 || t > 1) continue;
-      const closestX = this.x + t * cosA * this.length;
-      const closestY = this.y + t * sinA * this.length;
-      const distSqToBeam = distSq({ x: ship.x, y: ship.y }, { x: closestX, y: closestY });
-      const hitRadius = this.radius + collisionRadiusFor(ship);
-
-      if (distSqToBeam < hitRadius * hitRadius) {
+      const beamHit = checkBeamHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.angle, this.length, this.radius);
+      if (beamHit) {
         hits.push({
           targetId: ship.id,
           ownerId: this.ownerId,
@@ -382,8 +399,8 @@ export class BeamProjectile extends Projectile {
           armorPierce: false,
           splashRadius: this.splashRadius,
           splashDamage: splashDmg,
-          x: closestX,
-          y: closestY,
+          x: beamHit.cx,
+          y: beamHit.cy,
           kind: this.bulletKind,
         });
       }
@@ -407,6 +424,7 @@ export class BeamProjectile extends Projectile {
       angle: this.angle,
       kind: this.bulletKind,
       radius: this.radius,
+      spawnTick: this.spawnTick,
     };
   }
 }
@@ -419,6 +437,7 @@ export class MineProjectile extends Projectile {
   triggerRadius: number;
   armingTicks: number;
   bulletKind: WeaponKind;
+  spawnTick: number;
 
   private _alive = true;
   private _armed = false;
@@ -436,6 +455,7 @@ export class MineProjectile extends Projectile {
     triggerRadius: number,
     armingTicks: number,
     bulletKind: WeaponKind,
+    spawnTick: number = 0,
   ) {
     super(id, ownerId, ownerController, x, y, angle, radius);
     this.damage = damage;
@@ -443,6 +463,7 @@ export class MineProjectile extends Projectile {
     this.triggerRadius = triggerRadius;
     this.armingTicks = armingTicks;
     this.bulletKind = bulletKind;
+    this.spawnTick = spawnTick;
   }
 
   get alive(): boolean { return this._alive; }
@@ -502,6 +523,7 @@ export class MineProjectile extends Projectile {
       angle: this.angle,
       kind: "mine",
       radius: this.radius + (this._armed ? this.triggerRadius : 0),
+      spawnTick: this.spawnTick,
     };
   }
 }
@@ -514,6 +536,7 @@ export function createProjectile(
   angle: number,
   weapon: WeaponKind,
   targetId?: string,
+  spawnTick: number = 0,
 ): Projectile {
   const id = uuid();
   const stats = WEAPON_STATS[weapon];
@@ -525,6 +548,7 @@ export function createProjectile(
       id, ownerId, ownerController, x, y, angle, stats.radius,
       vx, vy, stats.life, weapon, stats.damage, stats.splashRadius,
       stats.turnRate ?? 0.02, targetId, stats.speed,
+      spawnTick,
     );
   }
 
@@ -534,5 +558,6 @@ export function createProjectile(
     id, ownerId, ownerController, x, y, angle, stats.radius,
     vx, vy, stats.life, weapon, stats.damage, stats.splashRadius,
     stats.statusEffect, stats.detonateAtLife,
+    spawnTick,
   );
 }

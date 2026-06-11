@@ -3,7 +3,8 @@ import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
 import type { ControlPoint } from "../../core/world/zones";
 import { initZones } from "../../core/world/zones";
-import { DEFAULT_PLAYER_CLASS, SHIP_CLASS_STATS, classStats } from "../../core/ships/shipStats";
+import { SHIP_CLASSES } from "@speakerdust/shared";
+import { DEFAULT_PLAYER_CLASS } from "../../core/ships/shipStats";
 import type { GameState } from "../../core/state";
 import { SNAPSHOT_VERSION, SNAPSHOT_KEY } from "./constants";
 
@@ -74,9 +75,11 @@ class ShipSerializer {
   static normalise(raw: unknown): Ship | null {
     if (!raw || typeof raw !== "object") return null;
     const r = raw as Record<string, unknown>;
-    const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASS_STATS) as ShipClass[]);
-    const stats = classStats(shipClass);
-    const slots = weaponList(r.weaponSlots, stats.weaponSlots);
+    const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASSES) as ShipClass[]);
+    const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
+    const stats = def.stats;
+    const phys = def.physics;
+    const slots = weaponList(r.weaponSlots, [...stats.weaponSlots]);
     const weapon = str<WeaponKind>(r.weapon, slots[0]!, slots);
     const controller = str(r.controller, "player", ["player", "ai"] as const);
     return {
@@ -84,8 +87,8 @@ class ShipSerializer {
       controller,
       shipClass,
       role: str(r.role, stats.role),
-      mass: num(r.mass, stats.mass),
-      turnRate: num(r.turnRate, stats.turnRate),
+      mass: num(r.mass, phys.mass),
+      turnRate: num(r.turnRate, phys.maxAngularSpeed),
       weaponSlots: slots,
       x: num(r.x, 600), y: num(r.y, 400),
       vx: num(r.vx, 0), vy: num(r.vy, 0),
@@ -105,13 +108,15 @@ class ShipSerializer {
       boostCooldown: num(r.boostCooldown, 0),
       boostQueued: false,
       empTicks: num(r.empTicks, 0),
-      inputForward: 0, inputStrafe: 0,
+      inputForward: 0, inputStrafe: 0, inputTurn: 0,
+      heading: num(r.heading, -Math.PI / 2),
+      angularVelocity: num(r.angularVelocity, 0),
       iFrames: num(r.iFrames, 0),
       alive: bool(r.alive, true),
-      drag: num(r.drag, stats.drag),
-      maxSpeed: num(r.maxSpeed, stats.maxSpeed),
-      thrustForce: num(r.thrustForce, stats.thrustForce),
-      strafeThrustForce: num(r.strafeThrustForce, stats.strafeThrustForce),
+      drag: num(r.drag, phys.linearDrag),
+      maxSpeed: num(r.maxSpeed, phys.maxLinearSpeed),
+      thrustForce: num(r.thrustForce, phys.thrustAccel),
+      strafeThrustForce: num(r.strafeThrustForce, phys.strafeAccel),
       name: str(r.name, ""),
       color: str(r.color, "hsl(180,80%,65%)"),
       team: str(r.team, "red", ["red", "blue", "spectator"] as const),

@@ -55,12 +55,20 @@ export interface Ship {
   // Control
   inputForward: number;
   inputStrafe: number;
+  inputTurn: number;
   angle: number;
   targetAngle: number;
   x: number;
   y: number;
   vx: number;
   vy: number;
+
+  // New physics fields
+  heading: number;
+  angularVelocity: number;
+
+  // Physics engine instance (non-serialized, attached at runtime)
+  _physics?: import("@speakerdust/shared").ShipPhysics;
 
   // Optional stat overrides
   heatCoolRate?: number;

@@ -1,5 +1,4 @@
-import type { PixelGrid, WeaponKind } from "@speakerdust/shared";
-import { SHIP_ATTACHMENTS } from "@speakerdust/shared";
+import type { Sprite, Attachment, WeaponKind } from "@speakerdust/shared";
 import { drawWeaponOnMount, createWeaponCache } from "./weaponRenderer";
 
 interface ShipCacheEntry {
@@ -13,15 +12,14 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
 
   const shipCache = new Map<string, ShipCacheEntry>();
 
-  // --- OPTIMIZACIÓN EXTREMA: Uso de WeakMap para evitar escanear el Grid ---
-  let gridIdCounter = 0;
-  const gridIds = new WeakMap<PixelGrid, number>();
+  let spriteIdCounter = 0;
+  const spriteIds = new WeakMap<Uint8Array, number>();
 
-  function getGridId(grid: PixelGrid): number {
-    let id = gridIds.get(grid);
+  function getSpriteId(pixels: Uint8Array): number {
+    let id = spriteIds.get(pixels);
     if (id === undefined) {
-      id = ++gridIdCounter;
-      gridIds.set(grid, id);
+      id = ++spriteIdCounter;
+      spriteIds.set(pixels, id);
     }
     return id;
   }
@@ -30,7 +28,6 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
   const paletteKeys = new Map<string, number>();
 
   function paletteId(palette: Record<number, string>): number {
-    // Stringify rápido de objetos pequeños para evitar lag
     const str = JSON.stringify(palette);
     const existing = paletteKeys.get(str);
     if (existing !== undefined) return existing;
@@ -40,25 +37,23 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
   }
 
   function getCachedShip(
-    grid: PixelGrid,
+    sprite: Sprite,
     palette: Record<number, string>,
     ps: number
   ): ShipCacheEntry {
-    // Usamos el ID instantáneo del WeakMap en lugar del costoso gridHash
-    const key = `${getGridId(grid)}_${ps}_${paletteId(palette)}`;
+    const key = `${getSpriteId(sprite.pixels)}_${ps}_${paletteId(palette)}`;
     const existing = shipCache.get(key);
     if (existing) return existing;
 
-    const rows = grid.length;
-    const cols = grid[0]!.length;
+    const { pixels, w, h } = sprite;
     const oc = document.createElement("canvas");
-    oc.width = cols * ps;
-    oc.height = rows * ps;
+    oc.width = w * ps;
+    oc.height = h * ps;
     const octx = oc.getContext("2d")!;
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const v = grid[r]![c]!;
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const v = pixels[r * w + c];
         if (!v || !palette[v]) continue;
         octx.fillStyle = palette[v]!;
         octx.fillRect(c * ps, r * ps, ps, ps);
@@ -71,31 +66,30 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
   }
 
   function drawPixelShip(
-    grid: PixelGrid,
+    sprite: Sprite,
     cx: number,
     cy: number,
     angle: number,
     palette: Record<number, string>,
     ps: number,
-    shipType?: string,
     loadout?: Record<string, WeaponKind>,
     tick?: number
   ): void {
-    const cached = getCachedShip(grid, palette, ps);
+    const cached = getCachedShip(sprite, palette, ps);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(angle);
     ctx.drawImage(cached.canvas, -Math.floor(cached.cx), -Math.floor(cached.cy));
     ctx.restore();
 
-    if (shipType && loadout) {
-      renderWeaponAttachments(ctx, shipType, loadout, cx, cy, angle, tick ?? 0, ps);
+    if (loadout && sprite.attachments.length > 0) {
+      renderWeaponAttachments(ctx, sprite.attachments, loadout, cx, cy, angle, tick ?? 0, ps);
     }
   }
 
   function renderWeaponAttachments(
     c: CanvasRenderingContext2D,
-    shipType: string,
+    attachments: readonly Attachment[],
     loadout: Record<string, WeaponKind>,
     shipX: number,
     shipY: number,
@@ -103,13 +97,11 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     tick: number,
     ps: number
   ): void {
-    const attachments = SHIP_ATTACHMENTS[shipType];
-    if (!attachments) return;
-
     const cos = Math.cos(shipAngle);
     const sin = Math.sin(shipAngle);
 
-    for (const mount of attachments.weapons) {
+    for (const mount of attachments) {
+      if (mount.kind !== "weapon_mount") continue;
       const weaponKind = loadout[mount.id];
       if (!weaponKind) continue;
 

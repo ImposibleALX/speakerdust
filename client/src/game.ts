@@ -1,214 +1,42 @@
-import { WEAPON_STATS, DEFAULT_LOADOUTS, SHIP_ATTACHMENTS } from "@speakerdust/shared";
-import type { WeaponKind } from "@speakerdust/shared";
-import { SHIP_BITMAPS } from "./assets/bitmaps";
+import { SHIP_CLASSES } from "@speakerdust/shared";
+import type { ShipClass } from "../../src/core/ships/shipTypes";
 import { createPixelShipRenderer } from "./renderer/renderer";
-import { generateToken } from "./network/codec";
 
-const IS_LOCAL = location.hostname === "localhost" ||
-    location.hostname === "127.0.0.1" ||
-    location.hostname === "" ||
-    location.protocol === "file:";
+const ALL_CLASSES: ShipClass[] = ["corvette", "destroyer", "missile_frigate", "cruiser", "battlecruiser", "battleship", "dreadnought"];
+import {
+    INPUT_RATE, SPECTATOR_CAM_SPEED, COOLDOWN_TABLE, QUICK_CHAT,
+    PAL_SCOUT, PAL_CRUISER_ENEMY, PAL_CAPITAL, PAL_FLASH_RED, FIXED_DT,
+} from "./constants";
+import {
+    myId, myTeam, myWeapon, myShield, myMaxShield, myMaxHp,
+    myBoostEnergy, myHeat, gameOver, respawnState, respawnTimer,
+    setRespawnState, setRespawnTimer, setMyTeam,
+    score, serverPlayers, serverBullets, serverEnemies, serverZones,
+    currentWave, lastTickTime, waveFlash, setWaveFlash, WORLD_W, WORLD_H,
+} from "./gameState";
+import {
+    canvas, adminPanel, adminClose, adminAuthForm, adminKeyInput,
+    adminResetAllBtn, adminClearEnemiesBtn, adminWaveInput,
+    adminSetWaveBtn, adminJoinRed, adminJoinBlue, adminGodmodeBtn,
+    adminHealBtn, adminResetDataBtn, restartBtn,
+    setDiff, updateTeamBadge, hideGameOver,
+    playerDamageFlashUntil,
+} from "./uiManager";
+import { cameraX, cameraY, shakeX, shakeY, setCameraPosition, offsetCamera, updateScreenShake } from "./camera";
+import {
+    renderPlayers, renderEnemies, renderBullets,
+    syncRenderState, syncShipPhysics, extrapolateBullets,
+} from "./stateManager";
+import { tickParticles, drawParticles, clearParticles } from "./particleSystem";
+import { updateAudio } from "./audioManager";
+import { connect, send, socket } from "./networkManager";
 
-const WORKER_WS = IS_LOCAL
-    ? "ws://localhost:8787"
-    : "wss://speakerdust.soyimposibleyt.workers.dev";
-const ROOM_ID = "sala-1";
-let userInteracted = false;
-
-const SHIELD_RADIUS = 28;
-const PLAYER_TAG_OFFSET = 30;
-const INPUT_RATE = 33;
-const MAX_PARTICLES = 420;
-const SPECTATOR_CAM_SPEED = 8;
-
-const COOLDOWN_TABLE: Record<WeaponKind, number> = {} as Record<WeaponKind, number>;
-for (const [kind, stats] of Object.entries(WEAPON_STATS)) {
-    COOLDOWN_TABLE[kind as WeaponKind] = stats.cooldown * 33;
-}
-
-const QUICK_CHAT = [
-    "¡Atacad!", "Defended la base", "Necesito apoyo", "Retirada",
-    "¡Bien hecho!", "Cuidado con el flanco", "Esperad mi señal",
-    "Voy a por el objetivo", "¡Gran trabajo!",
-];
-
-function getCanvas(id: string): HTMLCanvasElement {
-    const el = document.getElementById(id);
-    if (!el) throw new Error(`Element #${id} not found in DOM`);
-    if (!(el instanceof HTMLCanvasElement)) throw new Error(`Element #${id} is not a <canvas>`);
-    return el;
-}
-const canvas = getCanvas("gameCanvas");
-const ctx = canvas.getContext("2d")!;
-let WORLD_W = 1200, WORLD_H = 800;
-
-const $ = (id: string) => document.getElementById(id);
-const hudEl = $("hud")!;
-const statusBarEl = $("status-bar")!;
-const weaponDisp = $("weapon-display")!;
-const shieldDisp = $("shield-display")!;
-const scoreDisp = $("score")!;
-const waveNumDisp = $("wave-num")!;
-const playerCountDisp = $("player-count")!;
-const connStatusEl = $("connection-status")!;
-const overlay = $("screen-overlay")!;
-const overlayScore = $("overlay-score")!;
-const restartBtn = $("restart-btn") as HTMLButtonElement;
-const hpDisp = $("hp-display")!;
-const energyDisp = $("energy-display")!;
-const heatDisp = $("heat-display")!;
-const objectiveDisp = $("objective-display")!;
-const teamBadge = $("team-badge")!;
-const adminPanel = $("admin-panel")!;
-const adminClose = $("admin-close")!;
-const adminAuthForm = $("admin-auth-form") as HTMLFormElement;
-const adminKeyInput = $("admin-key-input") as HTMLInputElement;
-const adminAuthStatus = $("admin-auth-status")!;
-const adminControls = $("admin-controls")!;
-const adminResetAllBtn = $("admin-reset-all-btn")!;
-const adminClearEnemiesBtn = $("admin-clear-enemies-btn")!;
-const adminWaveInput = $("admin-wave-input") as HTMLInputElement;
-const adminSetWaveBtn = $("admin-set-wave-btn")!;
-const adminJoinRed = $("admin-join-red")!;
-const adminJoinBlue = $("admin-join-blue")!;
-const adminGodmodeBtn = $("admin-godmode-btn")!;
-const adminHealBtn = $("admin-heal-btn")!;
-const adminResetDataBtn = $("admin-reset-data-btn")!;
-const adminPlayerList = $("admin-player-list")!;
-
-let shakeStrength = 0;
-let shakeUntil = 0;
-let lastShakeBurstAt = 0;
-
-function addScreenShake(intensity: number, durationMs: number): void {
-    const now = performance.now();
-    if (now - lastShakeBurstAt < 80) return;
-    lastShakeBurstAt = now;
-    shakeStrength = Math.min(2.2, Math.max(shakeStrength, intensity));
-    shakeUntil = Math.max(shakeUntil, now + durationMs);
-}
-
-function getScreenShakeOffset(now: number): { x: number; y: number } {
-    if (now >= shakeUntil) {
-        shakeStrength = 0;
-        return { x: 0, y: 0 };
-    }
-    const t = 1 - Math.max(0, Math.min(1, (shakeUntil - now) / 220));
-    const amp = shakeStrength * (1 - t);
-    const s = Math.sin(now * 0.05);
-    return { x: s * amp * 6, y: Math.cos(now * 0.043) * amp * 6 };
-}
-
-const dmgOverlay = document.createElement("div");
-dmgOverlay.id = "damage-overlay";
-dmgOverlay.style.cssText = "pointer-events:none;position:fixed;top:0;left:0;width:100%;height:100%;background:radial-gradient(transparent 60%, rgba(255,0,0,0.5));opacity:0;transition:opacity 0.1s;z-index:100;";
-document.body.appendChild(dmgOverlay);
-
-let lastDamageFlash = 0;
-let dmgFlashTimeout: ReturnType<typeof setTimeout> | null = null;
-function flashDamageOverlay(): void {
-    const now = performance.now();
-    if (now - lastDamageFlash < 200) return;
-    lastDamageFlash = now;
-    if (dmgFlashTimeout) clearTimeout(dmgFlashTimeout);
-    dmgOverlay.style.opacity = "1";
-    dmgFlashTimeout = setTimeout(() => { dmgOverlay.style.opacity = "0"; }, 80);
-}
-
-let playerDamageFlashUntil = 0;
-function triggerPlayerDamageFlash(): void {
-    playerDamageFlashUntil = performance.now() + 120;
-}
-
-let audioCtx: AudioContext | null = null;
-let masterCompressor: DynamicsCompressorNode | null = null;
-let cachedNoiseBuffer: AudioBuffer | null = null;
-
-function getNoiseBuffer(ctxAudio: AudioContext): AudioBuffer {
-    if (cachedNoiseBuffer) return cachedNoiseBuffer;
-    const length = ctxAudio.sampleRate * 2;
-    const buffer = ctxAudio.createBuffer(1, length, ctxAudio.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
-    cachedNoiseBuffer = buffer;
-    return buffer;
-}
-
-function ensureAudio(): AudioContext | null {
-    if (!audioCtx) {
-        const Ctor = window.AudioContext || (window as any).webkitAudioContext;
-        if (!Ctor) return null;
-        audioCtx = new Ctor();
-        masterCompressor = audioCtx.createDynamicsCompressor();
-        masterCompressor.threshold.setValueAtTime(-14, audioCtx.currentTime);
-        masterCompressor.knee.setValueAtTime(0, audioCtx.currentTime);
-        masterCompressor.ratio.setValueAtTime(12, audioCtx.currentTime);
-        masterCompressor.attack.setValueAtTime(0.003, audioCtx.currentTime);
-        masterCompressor.release.setValueAtTime(0.1, audioCtx.currentTime);
-        masterCompressor.connect(audioCtx.destination);
-        cachedNoiseBuffer = null;
-    }
-    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => { });
-    return audioCtx;
-}
-
-function playTone(freq: number, duration: number, type: OscillatorType = "sine", gain = 0.06, sweepTo: number | null = null): void {
-    const ctxAudio = ensureAudio();
-    if (!ctxAudio || !masterCompressor) return;
-    const osc = ctxAudio.createOscillator();
-    const amp = ctxAudio.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, ctxAudio.currentTime);
-    if (sweepTo !== null) {
-        osc.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), ctxAudio.currentTime + duration);
-    }
-    amp.gain.setValueAtTime(gain, ctxAudio.currentTime);
-    amp.gain.exponentialRampToValueAtTime(0.0001, ctxAudio.currentTime + duration);
-    osc.connect(amp);
-    amp.connect(masterCompressor);
-    osc.start();
-    osc.stop(ctxAudio.currentTime + duration);
-}
-
-function playNoise(duration: number, gain = 0.06): void {
-    const ctxAudio = ensureAudio();
-    if (!ctxAudio || !masterCompressor) return;
-    const source = ctxAudio.createBufferSource();
-    const amp = ctxAudio.createGain();
-    const filter = ctxAudio.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.value = 520;
-    source.buffer = getNoiseBuffer(ctxAudio);
-    amp.gain.setValueAtTime(gain, ctxAudio.currentTime);
-    amp.gain.exponentialRampToValueAtTime(0.0001, ctxAudio.currentTime + duration);
-    source.connect(filter);
-    filter.connect(amp);
-    amp.connect(masterCompressor);
-    source.start();
-    source.stop(ctxAudio.currentTime + duration);
-}
-
-function triggerHaptic(duration = 50, intensity = 0.5): void {
-    try {
-        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-        for (const gp of gamepads) {
-            if (gp && gp.vibrationActuator) {
-                (gp.vibrationActuator as any).playEffect("dual-rumble", {
-                    duration,
-                    strongMagnitude: intensity,
-                    weakMagnitude: intensity * 0.5,
-                }).catch(() => { });
-            }
-        }
-    } catch (_) { }
-    if (userInteracted && navigator.vibrate) {
-        try { navigator.vibrate(duration); } catch (_) { }
-    }
-}
-
+const ctx2d = canvas.getContext("2d")!;
 let viewW = 0, viewH = 0;
 
-function resizeCanvas(): void {
+export function resizeCanvas(): void {
+    const hudEl = document.getElementById("hud")!;
+    const statusBarEl = document.getElementById("status-bar")!;
     const hudH = hudEl?.offsetHeight ?? 0;
     const statH = statusBarEl?.offsetHeight ?? 0;
     viewW = window.innerWidth;
@@ -219,7 +47,6 @@ function resizeCanvas(): void {
     canvas.height = Math.round(viewH * dpr);
     canvas.style.width = viewW + "px";
     canvas.style.height = viewH + "px";
-    canvas.style.marginTop = hudH + "px";
     canvas.style.marginLeft = "0px";
     canvas.style.display = "block";
 
@@ -232,115 +59,7 @@ function resizeCanvas(): void {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
-const { drawPixelShip } = createPixelShipRenderer(ctx);
-
-const NAVAL_WEAPON_COLORS: Record<WeaponKind, string> = {
-    naval_cannon: "#ffd36a", autocannon: "#a8ff78", plasma_broadside: "#d86bff",
-    railgun: "#7df9ff", torpedo: "#ff9030", guided_missile: "#ff6a3d",
-    energy_bomb: "#ffe66d", emp_launcher: "#66ccff",
-};
-const NAVAL_WEAPON_ICONS: Record<WeaponKind, string> = {
-    naval_cannon: "NAVAL CANNON", autocannon: "AUTOCANNON", plasma_broadside: "PLASMA BROADSIDE",
-    railgun: "RAILGUN", torpedo: "TORPEDO", guided_missile: "GUIDED MISSILE",
-    energy_bomb: "ENERGY BOMB", emp_launcher: "EMP LAUNCHER",
-};
-
-function setDiff(el: HTMLElement | null, text: string): void {
-    if (el && el.textContent !== text) el.textContent = text;
-}
-
-function renderMeter(value: number, max: number, width: number, filledChar: string, emptyChar: string): string {
-    const safeValue = Number.isFinite(value) ? value : 0;
-    const safeMax = max > 0 ? max : 1;
-    const clamped = Math.max(0, Math.min(safeMax, safeValue));
-    const filled = Math.round((clamped / safeMax) * width);
-    return filledChar.repeat(filled) + emptyChar.repeat(Math.max(0, width - filled));
-}
-
-function drawWeaponHUD(weapon: WeaponKind): void {
-    if (!weaponDisp) return;
-    const color = NAVAL_WEAPON_COLORS[weapon] || "#fff";
-    setDiff(weaponDisp, NAVAL_WEAPON_ICONS[weapon] || weapon || "");
-    weaponDisp.style.color = color;
-    weaponDisp.style.textShadow = `0 0 10px ${color}`;
-}
-
-function drawShieldHUD(shield: number, shieldMax: number): void {
-    if (!shieldDisp) return;
-    const sMax = shieldMax || 3;
-    setDiff(shieldDisp, "◈".repeat(Math.max(0, shield)) + "◇".repeat(Math.max(0, sMax - shield)));
-    shieldDisp.style.color = shield > 1 ? "#4af" : shield === 1 ? "#fa0" : "#f44";
-}
-
-function drawHpHUD(hp: number, maxHp: number): void {
-    if (!hpDisp) return;
-    const currentMax = maxHp > 0 ? maxHp : 5;
-    setDiff(hpDisp, "◈".repeat(Math.max(0, hp)) + "◇".repeat(Math.max(0, currentMax - hp)));
-    hpDisp.style.color = hp > (currentMax * 0.4) ? "#a8ff78" : hp > (currentMax * 0.2) ? "#ffd36a" : "#ff6a7a";
-}
-
-function drawEnergyHUD(energy: number): void {
-    if (energyDisp) setDiff(energyDisp, renderMeter(energy, 100, 10, "█", "░"));
-}
-
-function drawHeatHUD(heat: number): void {
-    if (!heatDisp) return;
-    setDiff(heatDisp, renderMeter(heat, 100, 10, "█", "░"));
-    heatDisp.style.color = heat > 75 ? "#ff6a7a" : heat > 45 ? "#ffb35a" : "#ffd36a";
-}
-
-function drawObjectiveHUD(zones: Record<string, any>): void {
-    if (!objectiveDisp) return;
-    const list = Object.values(zones || {});
-    if (!list.length) {
-        setDiff(objectiveDisp, "DOMINIO 0/0");
-        return;
-    }
-    const playersOwned = list.filter((z: any) => z.owner === "red" || z.owner === "blue").length;
-    const maxProg = (z: any) => Math.max(z.redProgress || 0, z.blueProgress || 0, z.enemyProgress || 0);
-    const focus = list.reduce((best: any, z: any) => maxProg(z) > maxProg(best) ? z : best, list[0]);
-    const pct = Math.round(maxProg(focus));
-    let ownerText = "NEUTRAL";
-    if (focus.owner === myTeam) ownerText = "ALLY";
-    else if (focus.owner === "red" || focus.owner === "blue") ownerText = "RIVAL";
-    else if (focus.owner === "enemies") ownerText = "ENEMY";
-    setDiff(objectiveDisp, `CONTROL ${playersOwned}/${list.length} • ${focus.label || "ZONE"} ${pct}% ${ownerText}`);
-}
-
-function updateTeamBadge(team: string): void {
-    if (!teamBadge) return;
-    setDiff(teamBadge, team === "red" ? "◆ RED TEAM" : team === "blue" ? "◆ BLUE TEAM" : "◇ SPECTATOR");
-    teamBadge.className = team === "red" ? "team-badge-red" : "team-badge-blue";
-}
-
-function playWeaponSound(weapon: string): void {
-    switch (weapon) {
-        case "naval_cannon": case "railgun":
-            playTone(880, 0.04, "square", 0.035, 1360); break;
-        case "plasma_broadside": case "autocannon":
-            playTone(620, 0.03, "triangle", 0.028, 740);
-            playTone(820, 0.04, "triangle", 0.025, 1040); break;
-        case "torpedo": case "guided_missile":
-            playTone(180, 0.12, "sawtooth", 0.04, 90);
-            playTone(70, 0.16, "triangle", 0.03, 40); break;
-        default: playTone(880, 0.04, "square", 0.035, 1360);
-    }
-}
-
-function playImpactSound(strong = false): void {
-    playNoise(strong ? 0.06 : 0.03, strong ? 0.045 : 0.02);
-    playTone(strong ? 260 : 420, strong ? 0.05 : 0.03, "square", strong ? 0.03 : 0.015, strong ? 140 : 260);
-}
-
-function playExplosionSound(): void {
-    playNoise(0.16, 0.08);
-    playTone(72, 0.18, "sawtooth", 0.04, 35);
-}
-
-function playObjectiveSound(): void {
-    playTone(660, 0.05, "triangle", 0.03, 880);
-    playTone(990, 0.08, "triangle", 0.03, 1320);
-}
+const { drawPixelShip } = createPixelShipRenderer(ctx2d);
 
 interface Star {
     x: number; y: number; size: number; speed: number;
@@ -350,7 +69,7 @@ let stars: Star[] = [];
 const nebOffscreen = document.createElement("canvas");
 let nebBuilt = false;
 
-function generateStars(): void {
+export function generateStars(): void {
     stars = Array.from({ length: 280 }, () => ({
         x: Math.random() * WORLD_W, y: Math.random() * WORLD_H,
         size: Math.random() < 0.06 ? 2 : 1,
@@ -387,35 +106,41 @@ function buildNebulas(): void {
     nebBuilt = true;
 }
 
-function drawBackground(): void {
-    ctx.fillStyle = "#02030e";
-    ctx.fillRect(cameraX, cameraY, viewW, viewH);
+export function onWorldResize(): void {
+    resizeCanvas();
+    generateStars();
+    nebBuilt = false;
+}
 
-    ctx.strokeStyle = "rgba(8,15,48,0.5)";
-    ctx.lineWidth = 1;
+function drawBackground(): void {
+    ctx2d.fillStyle = "#02030e";
+    ctx2d.fillRect(cameraX, cameraY, viewW, viewH);
+
+    if (!nebBuilt) buildNebulas();
+
+    ctx2d.strokeStyle = "rgba(8,15,48,0.5)";
+    ctx2d.lineWidth = 1;
     const startX = Math.floor(cameraX / 48) * 48;
     const startY = Math.floor(cameraY / 48) * 48;
     const endX = cameraX + viewW + 48;
     const endY = cameraY + viewH + 48;
     for (let x = startX; x < endX; x += 48) {
-        const sx = Math.round(x - cameraX) + cameraX;
-        ctx.beginPath(); ctx.moveTo(sx, cameraY); ctx.lineTo(sx, endY); ctx.stroke();
+        ctx2d.beginPath(); ctx2d.moveTo(x, cameraY); ctx2d.lineTo(x, endY); ctx2d.stroke();
     }
     for (let y = startY; y < endY; y += 48) {
-        const sy = Math.round(y - cameraY) + cameraY;
-        ctx.beginPath(); ctx.moveTo(cameraX, sy); ctx.lineTo(endX, sy); ctx.stroke();
+        ctx2d.beginPath(); ctx2d.moveTo(cameraX, y); ctx2d.lineTo(endX, y); ctx2d.stroke();
     }
 
     const wrapS = 2000;
     for (const s of stars) {
-        let px = ((s.x - cameraX * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
-        let py = ((s.y - cameraY * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
+        const px = ((s.x - cameraX * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
+        const py = ((s.y - cameraY * (s.speed * 1.5)) % wrapS + wrapS) % wrapS;
         if (px < 0 || px > viewW || py < 0 || py > viewH) continue;
-        ctx.globalAlpha = s.alpha * (0.6 + 0.4 * Math.sin(s.tw));
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(Math.round(px) + cameraX, Math.round(py) + cameraY, s.size, s.size);
+        ctx2d.globalAlpha = s.alpha * (0.6 + 0.4 * Math.sin(s.tw));
+        ctx2d.fillStyle = "#ffffff";
+        ctx2d.fillRect(px + cameraX, py + cameraY, s.size, s.size);
     }
-    ctx.globalAlpha = 1;
+    ctx2d.globalAlpha = 1;
 }
 
 function drawObjectives(zones: Record<string, any>): void {
@@ -425,90 +150,57 @@ function drawObjectives(zones: Record<string, any>): void {
             : zone.owner === "blue" ? "#3399ff"
                 : zone.owner === "enemies" ? "#ff4a88" : "#7f8aa8";
         const alpha = zone.owner === "neutral" ? 0.12 : 0.2;
-        const fill = ctx.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
+        const fill = ctx2d.createRadialGradient(zone.x, zone.y, 0, zone.x, zone.y, zone.radius);
         fill.addColorStop(0, `rgba(255,255,255,${alpha * 0.9})`);
         fill.addColorStop(0.55, `rgba(255,255,255,${alpha * 0.45})`);
         fill.addColorStop(1, "transparent");
 
-        ctx.save();
-        ctx.fillStyle = fill;
-        ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill();
+        ctx2d.save();
+        ctx2d.fillStyle = fill;
+        ctx2d.beginPath(); ctx2d.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx2d.fill();
 
-        ctx.strokeStyle = ownerColor;
-        ctx.lineWidth = 2;
-        ctx.shadowBlur = 14; ctx.shadowColor = ownerColor;
-        ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.stroke();
-        ctx.shadowBlur = 0;
+        ctx2d.strokeStyle = ownerColor;
+        ctx2d.lineWidth = 2;
+        ctx2d.shadowBlur = 14; ctx2d.shadowColor = ownerColor;
+        ctx2d.beginPath(); ctx2d.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx2d.stroke();
+        ctx2d.shadowBlur = 0;
 
-        ctx.strokeStyle = ownerColor;
-        ctx.globalAlpha = 0.5;
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius * 0.62, 0, Math.PI * 2); ctx.stroke();
+        ctx2d.strokeStyle = ownerColor;
+        ctx2d.globalAlpha = 0.5;
+        ctx2d.lineWidth = 1;
+        ctx2d.beginPath(); ctx2d.arc(zone.x, zone.y, zone.radius * 0.62, 0, Math.PI * 2); ctx2d.stroke();
 
         const prog = myTeam === "red" ? zone.redProgress : zone.blueProgress;
         if (prog > 0) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(zone.x, zone.y, zone.radius + 6, -Math.PI / 2, -Math.PI / 2 + (prog / 100) * Math.PI * 2);
-            ctx.strokeStyle = myTeam === "red" ? "#ff3355" : "#3399ff";
-            ctx.lineWidth = 3;
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = ctx.strokeStyle;
-            ctx.stroke();
-            ctx.restore();
+            ctx2d.save();
+            ctx2d.beginPath();
+            ctx2d.arc(zone.x, zone.y, zone.radius + 6, -Math.PI / 2, -Math.PI / 2 + (prog / 100) * Math.PI * 2);
+            ctx2d.strokeStyle = myTeam === "red" ? "#ff3355" : "#3399ff";
+            ctx2d.lineWidth = 3;
+            ctx2d.shadowBlur = 10;
+            ctx2d.shadowColor = ctx2d.strokeStyle;
+            ctx2d.stroke();
+            ctx2d.restore();
         }
 
-        ctx.globalAlpha = 0.9;
-        ctx.fillStyle = ownerColor;
-        ctx.font = "7px 'Press Start 2P', monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(zone.label || "ZONA", Math.round(zone.x - cameraX) + cameraX, Math.round(zone.y - zone.radius - 10 - cameraY) + cameraY);
-        ctx.font = "6px 'Press Start 2P', monospace";
+        ctx2d.globalAlpha = 0.9;
+        ctx2d.fillStyle = ownerColor;
+        ctx2d.font = "7px 'Press Start 2P', monospace";
+        ctx2d.textAlign = "center";
+        ctx2d.fillText(zone.label || "ZONA", zone.x, zone.y - zone.radius - 10);
+        ctx2d.font = "6px 'Press Start 2P', monospace";
         const maxProgress = Math.max(zone.redProgress || 0, zone.blueProgress || 0, zone.enemyProgress || 0);
-        ctx.fillText(`${Math.round(maxProgress)}%`, Math.round(zone.x - cameraX) + cameraX, Math.round(zone.y + zone.radius + 12 - cameraY) + cameraY);
-        ctx.restore();
+        ctx2d.fillText(`${Math.round(maxProgress)}%`, zone.x, zone.y + zone.radius + 12);
+        ctx2d.restore();
     }
 }
 
-interface Particle {
-    x: number; y: number; vx: number; vy: number;
-    sz: number; color: string; life: number; maxLife: number;
-}
-let particles: Particle[] = [];
-
-function explode(x: number, y: number, colors: string[], n: number, spd = 4.5, scale = 1): void {
-    const effectiveN = Math.round(n * scale);
-    const effectiveSpd = spd * scale;
-    for (let i = 0; i < effectiveN; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const s = Math.random() * effectiveSpd + 0.8;
-        particles.push({
-            x, y,
-            vx: Math.cos(a) * s, vy: Math.sin(a) * s,
-            sz: Math.floor(Math.random() * 5 + 2),
-            color: colors[Math.floor(Math.random() * colors.length)] ?? "#fff",
-            life: 30 + Math.random() * 15, maxLife: 45,
-        });
-    }
-}
-
-function tickParticles(): void {
-    particles = particles.filter(p => p.life > 0);
-    for (const p of particles) {
-        p.x += p.vx; p.y += p.vy;
-        p.vx *= 0.91; p.vy *= 0.91;
-        p.life--;
-    }
-}
-
-function drawParticles(): void {
-    for (const p of particles) {
-        ctx.globalAlpha = p.life / p.maxLife;
-        ctx.fillStyle = p.color;
-        const s = Math.max(1, Math.ceil(p.sz * (p.life / p.maxLife)));
-        ctx.fillRect(Math.round(p.x - cameraX) + cameraX, Math.round(p.y - cameraY) + cameraY, s, s);
-    }
-    ctx.globalAlpha = 1;
+function drawWaveFlash(): void {
+    if (waveFlash <= 0) return;
+    ctx2d.globalAlpha = (waveFlash / 50) * 0.3;
+    ctx2d.fillStyle = "#00e5ff";
+    ctx2d.fillRect(0, 0, WORLD_W, WORLD_H);
+    ctx2d.globalAlpha = 1;
 }
 
 function drawBullets(bullets: Record<string, any>): void {
@@ -519,64 +211,64 @@ function drawBullets(bullets: Record<string, any>): void {
             b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) continue;
 
         const a = b.angle !== undefined ? b.angle : Math.atan2(b.vy, b.vx);
-        const bx = Math.round(b.x - cameraX) + cameraX;
-        const by = Math.round(b.y - cameraY) + cameraY;
+        const bx = b.x;
+        const by = b.y;
 
-        ctx.save();
-        ctx.translate(bx, by);
-        ctx.rotate(a);
+        ctx2d.save();
+        ctx2d.translate(bx, by);
+        ctx2d.rotate(a);
 
         const kind = b.kind;
         if (kind === "naval_cannon") {
-            ctx.shadowBlur = 14; ctx.shadowColor = "#ffd36a";
-            ctx.fillStyle = "#ffb35a"; ctx.fillRect(-4, -4, 8, 8);
-            ctx.globalAlpha = 0.35; ctx.fillStyle = "#ffd36a"; ctx.fillRect(-7, -7, 14, 14);
+            ctx2d.shadowBlur = 14; ctx2d.shadowColor = "#ffd36a";
+            ctx2d.fillStyle = "#ffb35a"; ctx2d.fillRect(-4, -4, 8, 8);
+            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#ffd36a"; ctx2d.fillRect(-7, -7, 14, 14);
         } else if (kind === "autocannon") {
-            ctx.shadowBlur = 8; ctx.shadowColor = "#a8ff78";
-            ctx.fillStyle = "#ccffaa"; ctx.fillRect(-5, -1, 10, 3);
-            ctx.globalAlpha = 0.35; ctx.fillStyle = "#a8ff78"; ctx.fillRect(-7, -3, 14, 7);
+            ctx2d.shadowBlur = 8; ctx2d.shadowColor = "#a8ff78";
+            ctx2d.fillStyle = "#ccffaa"; ctx2d.fillRect(-5, -1, 10, 3);
+            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#a8ff78"; ctx2d.fillRect(-7, -3, 14, 7);
         } else if (kind === "plasma_broadside") {
-            ctx.shadowBlur = 10; ctx.shadowColor = "#cc00ff";
-            ctx.fillStyle = "#dd66ff"; ctx.fillRect(-3, -3, 6, 6);
-            ctx.globalAlpha = 0.4; ctx.fillStyle = "#aa00ff"; ctx.fillRect(-5, -5, 10, 10);
+            ctx2d.shadowBlur = 10; ctx2d.shadowColor = "#cc00ff";
+            ctx2d.fillStyle = "#dd66ff"; ctx2d.fillRect(-3, -3, 6, 6);
+            ctx2d.globalAlpha = 0.4; ctx2d.fillStyle = "#aa00ff"; ctx2d.fillRect(-5, -5, 10, 10);
         } else if (kind === "railgun") {
-            ctx.shadowBlur = 10; ctx.shadowColor = "#00e5ff";
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-12, -1, 24, 3);
-            ctx.globalAlpha = 0.35; ctx.fillStyle = "#00e5ff"; ctx.fillRect(-15, -3, 30, 7);
+            ctx2d.shadowBlur = 10; ctx2d.shadowColor = "#00e5ff";
+            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-12, -1, 24, 3);
+            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#00e5ff"; ctx2d.fillRect(-15, -3, 30, 7);
         } else if (kind === "torpedo") {
-            ctx.shadowBlur = 8; ctx.shadowColor = "#ff9030";
-            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-16, -3, 4, 6);
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-14, -2, 2, 4);
-            ctx.fillStyle = "#333333"; ctx.fillRect(-12, -5, 6, 10);
-            ctx.fillStyle = "#aaaaaa"; ctx.fillRect(-6, -4, 12, 8);
-            ctx.fillStyle = "#ff4444"; ctx.fillRect(6, -3, 6, 6);
-            ctx.fillRect(12, -2, 2, 4);
+            ctx2d.shadowBlur = 8; ctx2d.shadowColor = "#ff9030";
+            ctx2d.fillStyle = "#ffaa00"; ctx2d.fillRect(-16, -3, 4, 6);
+            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-14, -2, 2, 4);
+            ctx2d.fillStyle = "#333333"; ctx2d.fillRect(-12, -5, 6, 10);
+            ctx2d.fillStyle = "#aaaaaa"; ctx2d.fillRect(-6, -4, 12, 8);
+            ctx2d.fillStyle = "#ff4444"; ctx2d.fillRect(6, -3, 6, 6);
+            ctx2d.fillRect(12, -2, 2, 4);
         } else if (kind === "guided_missile") {
-            ctx.shadowBlur = 4; ctx.shadowColor = "#ff6a3d";
-            ctx.fillStyle = "#ffaa00"; ctx.fillRect(-12, -2, 3, 4);
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-10, -1, 1, 2);
-            ctx.fillStyle = "#888888"; ctx.fillRect(-9, -3, 5, 6);
-            ctx.fillStyle = "#cccccc"; ctx.fillRect(-4, -2, 8, 4);
-            ctx.fillStyle = "#555555"; ctx.fillRect(-6, -4, 4, 2);
-            ctx.fillStyle = "#555555"; ctx.fillRect(-6, 2, 4, 2);
-            ctx.fillStyle = "#ff4444"; ctx.fillRect(4, -2, 4, 4);
-            ctx.fillRect(8, -1, 2, 2);
+            ctx2d.shadowBlur = 4; ctx2d.shadowColor = "#ff6a3d";
+            ctx2d.fillStyle = "#ffaa00"; ctx2d.fillRect(-12, -2, 3, 4);
+            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-10, -1, 1, 2);
+            ctx2d.fillStyle = "#888888"; ctx2d.fillRect(-9, -3, 5, 6);
+            ctx2d.fillStyle = "#cccccc"; ctx2d.fillRect(-4, -2, 8, 4);
+            ctx2d.fillStyle = "#555555"; ctx2d.fillRect(-6, -4, 4, 2);
+            ctx2d.fillStyle = "#555555"; ctx2d.fillRect(-6, 2, 4, 2);
+            ctx2d.fillStyle = "#ff4444"; ctx2d.fillRect(4, -2, 4, 4);
+            ctx2d.fillRect(8, -1, 2, 2);
         } else if (kind === "energy_bomb") {
-            ctx.shadowBlur = 18; ctx.shadowColor = "#ffe66d";
-            ctx.fillStyle = "#ffcc00"; ctx.fillRect(-6, -6, 12, 12);
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-2, -2, 4, 4);
-            ctx.globalAlpha = 0.3; ctx.fillStyle = "#ffff66"; ctx.fillRect(-10, -10, 20, 20);
+            ctx2d.shadowBlur = 18; ctx2d.shadowColor = "#ffe66d";
+            ctx2d.fillStyle = "#ffcc00"; ctx2d.fillRect(-6, -6, 12, 12);
+            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-2, -2, 4, 4);
+            ctx2d.globalAlpha = 0.3; ctx2d.fillStyle = "#ffff66"; ctx2d.fillRect(-10, -10, 20, 20);
         } else if (kind === "emp_launcher") {
-            ctx.shadowBlur = 12; ctx.shadowColor = "#66ccff";
-            ctx.fillStyle = "#ccffff"; ctx.fillRect(-4, -4, 8, 8);
-            ctx.globalAlpha = 0.4; ctx.fillStyle = "#3399ff"; ctx.fillRect(-8, -8, 16, 16);
+            ctx2d.shadowBlur = 12; ctx2d.shadowColor = "#66ccff";
+            ctx2d.fillStyle = "#ccffff"; ctx2d.fillRect(-4, -4, 8, 8);
+            ctx2d.globalAlpha = 0.4; ctx2d.fillStyle = "#3399ff"; ctx2d.fillRect(-8, -8, 16, 16);
         } else {
-            ctx.fillStyle = "#ffffff"; ctx.fillRect(-2, -2, 4, 4);
+            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-2, -2, 4, 4);
         }
 
-        ctx.globalAlpha = 1;
-        ctx.shadowBlur = 0;
-        ctx.restore();
+        ctx2d.globalAlpha = 1;
+        ctx2d.shadowBlur = 0;
+        ctx2d.restore();
     }
 }
 
@@ -585,11 +277,16 @@ function parseHSL(hsl: string): number[] {
     return m ? m.map(Number) : [180, 80, 60];
 }
 
+const _palCache = new Map<string, Record<number, string>>();
+
 function makePlayerPalette(hsl: number[], team: string): Record<number, string> {
     const [h = 180, s = 80, l = 60] = hsl;
+    const key = team + "|" + h + "|" + s + "|" + l;
+    const cached = _palCache.get(key);
+    if (cached) return cached;
     const tintH = team === "red" ? 0 : team === "blue" ? 210 : h;
     const useH = team ? tintH : h;
-    return {
+    const pal: Record<number, string> = {
         1: `hsl(${useH},${s}%,${l}%)`,
         2: `hsl(${useH},${s - 10}%,${Math.min(l + 20, 90)}%)`,
         3: `hsl(${(useH + 200) % 360},${Math.max(s - 30, 30)}%,${Math.max(l - 20, 30)}%)`,
@@ -599,46 +296,26 @@ function makePlayerPalette(hsl: number[], team: string): Record<number, string> 
         7: `hsl(${(useH + 20) % 360},${Math.max(s - 5, 40)}%,${Math.min(l + 5, 85)}%)`,
         8: "#a0eeff",
     };
+    _palCache.set(key, pal);
+    return pal;
 }
 
-const PAL_SCOUT: Record<number, string> = Object.freeze({
-    1: "#b50035", 2: "#ff1c51", 3: "#ffaa00", 4: "#e6004b",
-    5: "#ff7093", 6: "#4a0016", 7: "#ff2a5f", 8: "#a0eeff",
-});
-const PAL_CRUISER_ENEMY: Record<number, string> = Object.freeze({
-    1: "#4a0080", 2: "#8a00cc", 3: "#ffaa00", 4: "#aa00ff",
-    5: "#ba66ff", 6: "#1a002b", 7: "#d488ff", 8: "#a0eeff",
-});
-const PAL_CAPITAL: Record<number, string> = Object.freeze({
-    1: "#12204a", 2: "#2d4bb5", 3: "#ffaa00", 4: "#e62a4a",
-    5: "#4272f5", 6: "#070c21", 7: "#5788fa", 8: "#a0eeff",
-});
-const PAL_FLASH_RED: Record<number, string> = Object.freeze({
-    1: "#ff0000", 2: "#ff5555", 3: "#ffaa00", 4: "#ff0000",
-    5: "#aa0000", 6: "#550000", 7: "#ff0000", 8: "#ffffff",
-});
-
 function drawShipEngines(
-    x: number,
-    y: number,
-    angle: number,
-    shipType: string,
-    color: string,
-    ps: number,
-    reverse: boolean = false
+    x: number, y: number, angle: number, shipClass: string,
+    color: string, ps: number, reverse: boolean = false
 ): void {
-    const attachments = SHIP_ATTACHMENTS[shipType];
-    if (!attachments) return;
+    const def = SHIP_CLASSES[shipClass];
+    if (!def) return;
 
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
+    ctx2d.save();
+    ctx2d.globalCompositeOperation = "screen";
 
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-
     const dir = reverse ? -1 : 1;
 
-    for (const engine of attachments.engines) {
+    for (const engine of def.attachments) {
+        if (engine.kind !== "engine") continue;
         const mx = engine.x * ps;
         const my = engine.y * ps;
         const ex = x + mx * cos - my * sin;
@@ -651,20 +328,18 @@ function drawShipEngines(
             const t = i / len;
             const trailDx = -Math.cos(angle) * dir;
             const trailDy = -Math.sin(angle) * dir;
-
             const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
             const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.5);
-
             const px = ex + trailDx * (i * 4 + pulse) + jitter;
             const py = ey + trailDy * (i * 4 + pulse) + jitter;
 
-            ctx.globalAlpha = (1 - t) * 0.7;
-            ctx.fillStyle = i < 2 ? "#ffffff" : color;
+            ctx2d.globalAlpha = (1 - t) * 0.7;
+            ctx2d.fillStyle = i < 2 ? "#ffffff" : color;
             const sz = Math.max(1, Math.floor((1 - t) * width * (ps / 2.5)));
-            ctx.fillRect(Math.round(px - cameraX) + cameraX, Math.round(py - cameraY) + cameraY, sz, sz);
+            ctx2d.fillRect(px, py, sz, sz);
         }
     }
-    ctx.restore();
+    ctx2d.restore();
 }
 
 function drawEnemies(enemies: Record<string, any>): void {
@@ -672,51 +347,51 @@ function drawEnemies(enemies: Record<string, any>): void {
         const e = enemies[id];
         const ps = 3;
         const shipClass = e.shipClass || "corvette";
+        const def = SHIP_CLASSES[shipClass];
+        if (!def) continue;
 
-        const isHeavy = shipClass === "battleship" || shipClass === "dreadnought";
-        const isMedium = shipClass === "destroyer" || shipClass === "missile_frigate" || shipClass === "cruiser";
+        const glowC = def.glowColor;
+        const pal = def.paletteKey === "capital" ? PAL_CAPITAL : def.paletteKey === "cruiser" ? PAL_CRUISER_ENEMY : PAL_SCOUT;
+        const r2 = def.boundingRadius;
+        const shadowBlur = Math.max(10, Math.round(r2 * 0.45));
+        const hpBarWidth = Math.round(r2 * 0.9);
+        const hpBarYOffset = Math.round(def.h / 2 + 8);
 
-        const glowC = isHeavy ? "#4466ff" : isMedium ? "#cc00ff" : "#ff2060";
+        const rx = e.x;
+        const ry = e.y;
+        drawShipEngines(rx, ry, e.heading ?? e.angle, shipClass, glowC, ps);
 
-        const shipType = isHeavy ? "capital" : isMedium ? "cruiser" : "scout";
-        const grid = SHIP_BITMAPS[shipType]!;
-
-        const pal = isHeavy
-            ? PAL_CAPITAL
-            : isMedium
-                ? PAL_CRUISER_ENEMY
-                : PAL_SCOUT;
-
-        const rx = Math.round(e.x - cameraX) + cameraX;
-        const ry = Math.round(e.y - cameraY) + cameraY;
-        drawShipEngines(rx, ry, e.angle, shipType, glowC, ps);
-
-        ctx.shadowBlur = isHeavy ? 22 : 14;
-        ctx.shadowColor = glowC;
-        drawPixelShip(grid, rx, ry, e.angle, pal, ps);
-        ctx.shadowBlur = 0;
+        ctx2d.shadowBlur = shadowBlur;
+        ctx2d.shadowColor = glowC;
+        drawPixelShip(def, rx, ry, e.heading ?? e.angle, pal, ps);
+        ctx2d.shadowBlur = 0;
 
         const maxHpSafe = e.maxHp > 0 ? e.maxHp : 10;
         const pct = Math.max(0, Math.min(1, e.hp / maxHpSafe));
-        const bw = isHeavy ? 44 : isMedium ? 32 : 22;
         const bh = 3;
-        const bx = Math.round(e.x - bw / 2 - cameraX) + cameraX;
-        const by = Math.round(e.y - (isHeavy ? 40 : 30) - cameraY) + cameraY;
-        ctx.fillStyle = "#220000";
-        ctx.fillRect(bx, by, bw, bh);
-        ctx.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
-        ctx.fillRect(bx, by, Math.round(bw * pct), bh);
+        const bx = e.x - hpBarWidth / 2;
+        const by = e.y - hpBarYOffset;
+        ctx2d.fillStyle = "#220000";
+        ctx2d.fillRect(bx, by, hpBarWidth, bh);
+        ctx2d.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
+        ctx2d.fillRect(bx, by, Math.round(hpBarWidth * pct), bh);
     }
 }
 
-function drawPlayers(players: Record<string, any>, myId: string | null, mx: number, my: number, myShield: number): void {
+function drawPlayers(
+    players: Record<string, any>, myId: string | null,
+    mx: number, my: number, myShield: number,
+    keys: Record<string, boolean>, myTeam: string, myWeapon: string,
+    playerDamageFlashUntil: number, myBoostEnergy: number,
+    serverPlayers: Record<string, any>, gameOver: boolean,
+): void {
     for (const id in players) {
         const p = players[id];
         if (!p.alive) continue;
         const isMe = id === myId;
         const hsl = parseHSL(p.color ?? "hsl(180,80%,60%)");
-        const prx = Math.round(p.x - cameraX) + cameraX;
-        const pry = Math.round(p.y - cameraY) + cameraY;
+        const prx = p.x;
+        const pry = p.y;
 
         let pal = makePlayerPalette(hsl, p.team);
         if (isMe && performance.now() < playerDamageFlashUntil) {
@@ -725,155 +400,80 @@ function drawPlayers(players: Record<string, any>, myId: string | null, mx: numb
 
         const teamGlow = p.team === "red" ? "#ff3355" : p.team === "blue" ? "#3399ff" : (p.color ?? "#ffffff");
 
-        ctx.shadowBlur = isMe ? 22 : 14;
-        ctx.shadowColor = teamGlow;
-        drawPixelShip(SHIP_BITMAPS.player!, prx, pry, p.angle, pal, isMe ? 3 : 2, "player", DEFAULT_LOADOUTS.player, Math.floor(performance.now() / 50));
-        ctx.shadowBlur = 0;
+        ctx2d.shadowBlur = isMe ? 22 : 14;
+        ctx2d.shadowColor = teamGlow;
+        const playerDef = SHIP_CLASSES[p.shipClass || "corvette"];
+        if (playerDef) {
+            drawPixelShip(playerDef, prx, pry, p.heading ?? p.angle, pal, isMe ? 3 : 2, playerDef.defaultLoadout, Math.floor(performance.now() / 50));
+        }
+        ctx2d.shadowBlur = 0;
 
         if (isMe) {
             const ps = 3;
             const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
             const reversing = keys["s"] || keys["arrowdown"];
-            drawShipEngines(prx, pry, p.angle, "player", trailColor, ps, reversing);
+            drawShipEngines(prx, pry, p.heading ?? p.angle, p.shipClass || "corvette", trailColor, ps, reversing);
 
             if ((keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28) {
-                const mx_boost = -Math.cos(p.angle);
-                const my_boost = -Math.sin(p.angle);
+                const mx_boost = -Math.cos(p.heading ?? p.angle);
+                const my_boost = -Math.sin(p.heading ?? p.angle);
                 for (let i = 0; i < 6; i++) {
                     const t = performance.now() * 0.01 + i * 1.3;
                     const ex = p.x + mx_boost * (18 + i * 4) + Math.sin(t) * 2.5;
                     const ey = p.y + my_boost * (18 + i * 4) + Math.cos(t + 0.7) * 2.5;
-                    ctx.globalAlpha = 0.7;
-                    ctx.fillStyle = "#00ccff";
-                    ctx.fillRect(Math.round(ex - cameraX) + cameraX, Math.round(ey - cameraY) + cameraY, 3, 3);
+                    ctx2d.globalAlpha = 0.7;
+                    ctx2d.fillStyle = "#00ccff";
+                    ctx2d.fillRect(ex, ey, 3, 3);
                 }
-                ctx.globalAlpha = 1;
+                ctx2d.globalAlpha = 1;
             }
         }
 
         if (isMe && myShield > 0) {
-            ctx.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(prx, pry, 28, 0, Math.PI * 2);
-            ctx.stroke();
+            ctx2d.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
+            ctx2d.lineWidth = 2;
+            ctx2d.beginPath();
+            ctx2d.arc(prx, pry, 28, 0, Math.PI * 2);
+            ctx2d.stroke();
         }
 
         if (isMe && !gameOver) {
-            ctx.strokeStyle = "rgba(0,229,255,0.22)";
-            ctx.lineWidth = 1;
-            ctx.setLineDash([5, 7]);
-            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(mx, my); ctx.stroke();
-            ctx.setLineDash([]);
+            ctx2d.strokeStyle = "rgba(0,229,255,0.22)";
+            ctx2d.lineWidth = 1;
+            ctx2d.setLineDash([5, 7]);
+            ctx2d.beginPath(); ctx2d.moveTo(p.x, p.y); ctx2d.lineTo(mx, my); ctx2d.stroke();
+            ctx2d.setLineDash([]);
             const cs = 9;
-            ctx.strokeStyle = "rgba(0,229,255,0.8)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(mx - cs, my); ctx.lineTo(mx + cs, my);
-            ctx.moveTo(mx, my - cs); ctx.lineTo(mx, my + cs);
-            ctx.stroke();
-            ctx.beginPath(); ctx.arc(mx, my, 4, 0, Math.PI * 2); ctx.stroke();
+            ctx2d.strokeStyle = "rgba(0,229,255,0.8)";
+            ctx2d.lineWidth = 1;
+            ctx2d.beginPath();
+            ctx2d.moveTo(mx - cs, my); ctx2d.lineTo(mx + cs, my);
+            ctx2d.moveTo(mx, my - cs); ctx2d.lineTo(mx, my + cs);
+            ctx2d.stroke();
+            ctx2d.beginPath(); ctx2d.arc(mx, my, 4, 0, Math.PI * 2); ctx2d.stroke();
 
             const now = performance.now();
-            const cd = COOLDOWN_TABLE[myWeapon] || 200;
+            const cd = (COOLDOWN_TABLE as Record<string, number>)[myWeapon] || 200;
             const elapsed = now - lastShot;
             const remaining = Math.max(0, cd - elapsed);
             if (remaining > 0) {
                 const barLen = 20;
                 const ratio = remaining / cd;
-                ctx.fillStyle = "rgba(255,255,255,0.7)";
-                ctx.fillRect(mx - barLen / 2, my + 15, barLen, 3);
-                ctx.fillStyle = "#ffaa00";
-                ctx.fillRect(mx - barLen / 2, my + 15, barLen * (1 - ratio), 3);
+                ctx2d.fillStyle = "rgba(255,255,255,0.7)";
+                ctx2d.fillRect(mx - barLen / 2, my + 15, barLen, 3);
+                ctx2d.fillStyle = "#ffaa00";
+                ctx2d.fillRect(mx - barLen / 2, my + 15, barLen * (1 - ratio), 3);
             }
         }
 
-        ctx.font = "6px 'Press Start 2P', monospace";
-        ctx.textAlign = "center";
-        ctx.fillStyle = isMe ? "rgba(0,229,255,0.85)"
+        ctx2d.font = "6px 'Press Start 2P', monospace";
+        ctx2d.textAlign = "center";
+        ctx2d.fillStyle = isMe ? "rgba(0,229,255,0.85)"
             : p.team === "red" ? "rgba(255,100,100,0.7)"
                 : p.team === "blue" ? "rgba(100,180,255,0.7)" : "rgba(200,220,255,0.5)";
-        const tagY = Math.round(p.y - (isMe ? 42 : 30) - cameraY) + cameraY;
-        if (p.name) ctx.fillText(p.name.slice(0, 8), Math.round(p.x - cameraX) + cameraX, tagY - 8);
-        ctx.fillText(`${p.score ?? 0}`, Math.round(p.x - cameraX) + cameraX, tagY);
-    }
-}
-
-let waveFlash = 0;
-function drawWaveFlash(): void {
-    if (waveFlash <= 0) return;
-    ctx.globalAlpha = (waveFlash / 50) * 0.3;
-    ctx.fillStyle = "#00e5ff";
-    ctx.fillRect(0, 0, WORLD_W, WORLD_H);
-    ctx.globalAlpha = 1;
-    waveFlash--;
-}
-
-let myId: string | null = null;
-let myTeam = "red";
-let myWeapon: WeaponKind = "naval_cannon";
-let myShield = 3;
-let myHp = 5;
-let myMaxShield = 3;
-let myMaxHp = 5;
-let myBoostEnergy = 100;
-let myHeat = 0;
-let gameOver = false;
-let respawnState: "idle" | "requesting" = "idle";
-let respawnTimer: ReturnType<typeof setTimeout> | null = null;
-let score = 0;
-let currentWave = 1;
-let serverPlayers: Record<string, any> = {};
-let serverBullets: Record<string, any> = {};
-let serverEnemies: Record<string, any> = {};
-let serverZones: Record<string, any> = {};
-
-let cameraX = 0, cameraY = 0;
-let lastFrameTime = 0;
-let lastTickTime = 0;
-let screenMx = window.innerWidth / 2, screenMy = window.innerHeight / 2;
-
-let renderPlayers: Record<string, any> = {};
-let renderEnemies: Record<string, any> = {};
-let renderBullets: Record<string, any> = {};
-
-function lerpAngle(a: number, b: number, amt: number): number {
-    const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
-    return a + delta * amt;
-}
-
-const ENTITY_SMOOTH = 0.2;
-const ANGLE_SMOOTH = 0.4;
-
-function syncRenderState(renderMap: Record<string, any>, serverMap: Record<string, any>, dt: number, isAngle = false): void {
-    const alpha = 1 - Math.pow(1 - ENTITY_SMOOTH, dt);
-    const alphaAngle = 1 - Math.pow(1 - ANGLE_SMOOTH, dt);
-
-    for (const id in serverMap) {
-        const s = serverMap[id];
-
-        if (!renderMap[id]) {
-            renderMap[id] = { ...s };
-        } else {
-            const r = renderMap[id];
-
-            r.x += (s.x - r.x) * alpha;
-            r.y += (s.y - r.y) * alpha;
-
-            if (isAngle && s.angle !== undefined) {
-                r.angle = lerpAngle(r.angle || 0, s.angle, alphaAngle);
-            } else if (s.angle !== undefined) {
-                r.angle = s.angle;
-            }
-
-            r.hp = s.hp; r.maxHp = s.maxHp; r.shield = s.shield; r.score = s.score;
-            r.color = s.color; r.shipClass = s.shipClass; r.alive = s.alive;
-            r.team = s.team; r.name = s.name;
-            r.vx = s.vx; r.vy = s.vy; r.radius = s.radius;
-        }
-    }
-    for (const id in renderMap) {
-        if (!serverMap[id]) delete renderMap[id];
+        const tagY = p.y - (isMe ? 42 : 30);
+        if (p.name) ctx2d.fillText(p.name.slice(0, 8), p.x, tagY - 8);
+        ctx2d.fillText(`${p.score ?? 0}`, p.x, tagY);
     }
 }
 
@@ -895,7 +495,19 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
         sendBoost();
     }
     if (e.key === " " && !e.repeat) e.preventDefault();
+    if (e.key === "[" || e.key === "]") {
+        const myClass = serverPlayers[myId!]?.shipClass || "corvette";
+        const idx = ALL_CLASSES.indexOf(myClass);
+        const dir = e.key === "]" ? 1 : -1;
+        const next = ALL_CLASSES[(idx + dir + ALL_CLASSES.length) % ALL_CLASSES.length]!;
+        if (next !== myClass) send("changeClass", { shipClass: next });
+    }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        adminPanel?.classList.toggle("hidden");
+        canvas.style.cursor = adminPanel?.classList.contains("hidden") ? "none" : "default";
+    }
+    if (e.key.toLowerCase() === "f10") {
         e.preventDefault();
         adminPanel?.classList.toggle("hidden");
         canvas.style.cursor = adminPanel?.classList.contains("hidden") ? "none" : "default";
@@ -908,12 +520,36 @@ window.addEventListener("blur", () => {
 });
 
 let mx = WORLD_W / 2, my = WORLD_H / 2;
+let screenMx = window.innerWidth / 2, screenMy = window.innerHeight / 2;
+let lastShot = 0;
+
 canvas.addEventListener("mousemove", (e: MouseEvent) => {
     const r = canvas.getBoundingClientRect();
     screenMx = e.clientX - r.left;
     screenMy = e.clientY - r.top;
 });
 canvas.addEventListener("mousedown", (e: MouseEvent) => {
+    const r = canvas.getBoundingClientRect();
+    const clickX = e.clientX - r.left;
+    const clickY = e.clientY - r.top;
+    const btnW = 88;
+    const btnH = 20;
+    const gap = 3;
+    const totalW = ALL_CLASSES.length * (btnW + gap) - gap;
+    const startX = (viewW - totalW) / 2;
+    const selectorY = viewH - btnH - 6;
+
+    if (e.button === 0 && clickY >= selectorY && clickY <= selectorY + btnH) {
+        for (let i = 0; i < ALL_CLASSES.length; i++) {
+            const x = startX + i * (btnW + gap);
+            if (clickX >= x && clickX <= x + btnW) {
+                const cls = ALL_CLASSES[i]!;
+                if (cls !== (serverPlayers[myId!]?.shipClass || "corvette")) send("changeClass", { shipClass: cls });
+                return;
+            }
+        }
+    }
+
     if (e.button === 0 && !gameOver) {
         isMouseShooting = true;
         fireShot();
@@ -925,10 +561,9 @@ canvas.addEventListener("mousedown", (e: MouseEvent) => {
 window.addEventListener("mouseup", (e: MouseEvent) => { if (e.button === 0) isMouseShooting = false; });
 canvas.addEventListener("contextmenu", (e: Event) => e.preventDefault());
 
-let lastShot = 0;
 function fireShot(): void {
     const now = performance.now();
-    const cd = COOLDOWN_TABLE[myWeapon] ?? 200;
+    const cd = (COOLDOWN_TABLE as Record<string, number>)[myWeapon] ?? 200;
     if (now - lastShot < cd || gameOver) return;
     lastShot = now;
     send("shoot");
@@ -955,11 +590,13 @@ adminSetWaveBtn?.addEventListener("click", () => {
 });
 adminJoinRed?.addEventListener("click", () => {
     send("set_team", { team: "red" });
-    myTeam = "red"; updateTeamBadge("red");
+    setMyTeam("red");
+    updateTeamBadge("red");
 });
 adminJoinBlue?.addEventListener("click", () => {
     send("set_team", { team: "blue" });
-    myTeam = "blue"; updateTeamBadge("blue");
+    setMyTeam("blue");
+    updateTeamBadge("blue");
 });
 adminGodmodeBtn?.addEventListener("click", () => send("admin_godmode"));
 adminHealBtn?.addEventListener("click", () => send("admin_heal_all"));
@@ -969,385 +606,55 @@ adminResetDataBtn?.addEventListener("click", () => {
     setTimeout(() => { window.location.reload(); }, 500);
 });
 
-function refreshAdminPlayerList(): void {
-    if (!adminPlayerList) return;
-    adminPlayerList.innerHTML = "";
-    for (const [id, p] of Object.entries(serverPlayers)) {
-        const row = document.createElement("div");
-        row.className = "admin-player-row";
-        const nameSpan = document.createElement("span");
-        nameSpan.className = `admin-player-name admin-player-team-${p.team || "red"}`;
-        nameSpan.textContent = `[${(p.team || "?").toUpperCase()}] ${p.name || id.slice(0, 6)}`;
-        const kickBtn = document.createElement("button");
-        kickBtn.className = "admin-kick-btn";
-        kickBtn.textContent = "KICK";
-        kickBtn.dataset.id = id;
-        kickBtn.addEventListener("click", () => send("admin_kick", { targetId: id }));
-        row.appendChild(nameSpan);
-        row.appendChild(kickBtn);
-        adminPlayerList.appendChild(row);
-    }
-}
-
-let socket: WebSocket | null = null;
-let isAdmin = false;
-let lastHitSoundTime = 0;
-
-function send(type: string, payload: Record<string, any> = {}): void {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ type, ...payload }));
-}
-
-function connect(): void {
-    setStatus("connecting");
-    const token = generateToken("player");
-    const wsUrl = IS_LOCAL
-        ? `${WORKER_WS}/room/${ROOM_ID}?token=${token}`
-        : `${WORKER_WS}/room/${ROOM_ID}?token=${token}`;
-    try {
-        socket = new WebSocket(wsUrl);
-    } catch (e) {
-        setStatus("disconnected");
-        setTimeout(connect, 3000);
-        return;
-    }
-    socket.addEventListener("open", () => setStatus("connected"));
-    socket.addEventListener("message", (e: MessageEvent) => handleMsg(JSON.parse(e.data)));
-    socket.addEventListener("close", () => {
-        setStatus("disconnected");
-        setTimeout(connect, 2500);
-    });
-    socket.addEventListener("error", () => setStatus("disconnected"));
-}
-
-function syncPlayerState(me: any): void {
-    score = me.score;
-    myShield = me.shield ?? myShield;
-    myMaxShield = me.shieldMax ?? 3;
-    myHp = me.hp ?? myHp;
-    myMaxHp = me.maxHp ?? myMaxHp;
-    myBoostEnergy = me.boostEnergy ?? myBoostEnergy;
-    myHeat = me.weaponHeat ?? myHeat;
-    if (me.weapon && me.weapon !== myWeapon) {
-        myWeapon = me.weapon;
-        drawWeaponHUD(myWeapon);
-    }
-    if (gameOver && me.alive) {
-        gameOver = false;
-        if (overlay) {
-            overlay.classList.add("hidden");
-            overlay.style.pointerEvents = "auto";
-        }
-        document.body.style.cursor = "none";
-        canvas.style.cursor = "crosshair";
-        lastShot = 0; particles = [];
-    }
-    if (me.isAdmin && !isAdmin) {
-        isAdmin = true;
-        adminControls?.classList.remove("hidden");
-        setDiff(adminAuthStatus, "◆ ADMIN ACTIVE");
-        if (adminAuthStatus) adminAuthStatus.className = "ok";
-    }
-    if (!me.alive && !gameOver) {
-        gameOver = true;
-        showGameOver();
-    }
-}
-
-function shouldShakeForExplosion(msg: { x: number; y: number; kind?: string }): boolean {
-    const me = serverPlayers[myId!];
-    if (!me || !me.alive) return false;
-    const radius = msg.kind === "dreadnought" ? 540 : msg.kind === "battleship" ? 380 : 160;
-    return Math.hypot(msg.x - me.x, msg.y - me.y) <= radius;
-}
-
-const msgHandlers: Record<string, (msg: any) => void> = {
-    init(msg) {
-        myId = msg.playerId;
-        myTeam = msg.team || "red";
-        updateTeamBadge(myTeam);
-        if (WORLD_W !== msg.worldW || WORLD_H !== msg.worldH) {
-            WORLD_W = msg.worldW; WORLD_H = msg.worldH;
-            resizeCanvas(); generateStars(); nebBuilt = false;
-        }
-        serverPlayers = msg.players;
-        serverBullets = Object.assign({}, msg.bullets, msg.enemyBullets || {});
-        serverEnemies = msg.enemies;
-        serverZones = msg.zones ?? {};
-        currentWave = msg.wave;
-        const me = serverPlayers[myId!];
-        if (me) syncPlayerState(me);
-        updateHUD();
-    },
-    tick(msg) {
-        lastTickTime = performance.now();
-        serverPlayers = msg.players;
-        serverBullets = Object.assign({}, msg.bullets, msg.enemyBullets || {});
-        serverEnemies = msg.enemies;
-        if (msg.zones) serverZones = msg.zones;
-        currentWave = msg.wave;
-        const me = serverPlayers[myId!];
-        if (me) syncPlayerState(me);
-        updateHUD();
-        if (isAdmin) refreshAdminPlayerList();
-    },
-    admin_authed(msg) {
-        if (msg.ok) {
-            isAdmin = true;
-            adminControls?.classList.remove("hidden");
-            setDiff(adminAuthStatus, "◆ ADMIN ACTIVE");
-            if (adminAuthStatus) adminAuthStatus.className = "ok";
-        } else {
-            setDiff(adminAuthStatus, "✕ WRONG KEY");
-            if (adminAuthStatus) adminAuthStatus.className = "";
-        }
-    },
-    admin_event(msg) {
-        if (msg.action === "reset_all") {
-            myShield = myMaxShield; myHp = myMaxHp; myBoostEnergy = 100; myHeat = 0;
-            updateHUD();
-        }
-    },
-    admin_godmode(msg) {
-        if (adminGodmodeBtn) setDiff(adminGodmodeBtn, msg.active ? "GODMODE ON" : "GODMODE OFF");
-        if (adminGodmodeBtn) {
-            adminGodmodeBtn.className = msg.active ? "admin-btn-danger" : "admin-btn-warn";
-        }
-    },
-    weapon_changed(msg) {
-        myWeapon = msg.weapon;
-        lastShot = 0;
-        drawWeaponHUD(myWeapon);
-    },
-    shockwave(msg) {
-        if (msg.ownerId !== myId) return;
-        if (!audioCtx) ensureAudio();
-        playWeaponSound(msg.weapon);
-    },
-    explosion(msg) {
-        playExplosionSound();
-        const scale = msg.kind === "dreadnought" ? 2.5 : msg.kind === "battleship" ? 1.8 : 1.0;
-        if (msg.kind === "battleship" || msg.kind === "dreadnought") {
-            explode(msg.x, msg.y, ["#ffcc00", "#ff6600", "#ffffff", "#4466ff"], 40, 7, scale);
-            explode(msg.x, msg.y, ["#ff4400", "#ff9900"], 20, 3, 1);
-            if (shouldShakeForExplosion(msg)) {
-                addScreenShake(msg.kind === "dreadnought" ? 1.8 : 1.2, msg.kind === "dreadnought" ? 260 : 180);
-            }
-            setTimeout(() => { explode(msg.x, msg.y, ["#ff4400", "#ff9900", "#ffff00", "#ffffff"], 60, 5, scale); }, 150);
-        } else if (msg.kind === "frigate" || msg.kind === "cruiser") {
-            explode(msg.x, msg.y, ["#cc00ff", "#ff80ff", "#ffffff", "#ff9030"], 24, 5, scale);
-        } else {
-            explode(msg.x, msg.y, ["#ff2060", "#ffaa20", "#ffffff"], 16, 4, scale);
-        }
-        const me = serverPlayers[myId!];
-        if (me && me.alive && Math.hypot(msg.x - me.x, msg.y - me.y) < 200) {
-            playImpactSound(true);
-            triggerHaptic(100, 0.8);
-        }
-    },
-    hit(msg) {
-        const now = performance.now();
-        if (now - lastHitSoundTime > 60) { playImpactSound(false); lastHitSoundTime = now; }
-        explode(msg.x, msg.y, ["#ffffff", "#ffdd88"], 6, 2);
-        const me = serverPlayers[myId!];
-        if (me && Math.hypot(msg.x - me.x, msg.y - me.y) < 100) {
-            if (msg.playerId === myId) {
-                triggerHaptic(30, 0.3);
-                flashDamageOverlay();
-                triggerPlayerDamageFlash();
-            }
-        }
-    },
-    shield_hit(msg) {
-        const now = performance.now();
-        if (now - lastHitSoundTime > 60) { playImpactSound(msg.reason === "impact"); lastHitSoundTime = now; }
-        if (msg.playerId === myId) {
-            addScreenShake(0.55, 140);
-            triggerHaptic(40, 0.5);
-            myShield = Math.max(0, myShield - 1);
-            drawShieldHUD(myShield, myMaxShield);
-            flashDamageOverlay();
-            triggerPlayerDamageFlash();
-            const p = serverPlayers[myId!];
-            if (p) explode(p.x, p.y, ["#4488ff", "#aaccff"], 8, 2);
-        }
-    },
-    player_dead(msg) {
-        playExplosionSound();
-        triggerHaptic(150, 1.0);
-        explode(msg.x, msg.y, ["#00e5ff", "#ffffff", "#0088ff"], 30, 6);
-        if (msg.playerId === myId) { gameOver = true; showGameOver(); }
-    },
-    respawned() {
-        if (respawnState === "idle") return;
-        respawnState = "idle";
-        if (respawnTimer) { clearTimeout(respawnTimer); respawnTimer = null; }
-        if (restartBtn) { restartBtn.disabled = false; setDiff(restartBtn, "↻ RESPECTAR"); }
-        gameOver = false;
-        if (overlay) {
-            overlay.classList.add("hidden");
-            overlay.style.pointerEvents = "auto";
-        }
-        document.body.style.cursor = "none";
-        canvas.style.cursor = "crosshair";
-        lastShot = 0; particles = [];
-    },
-    player_team(msg) {
-        if (serverPlayers[msg.playerId]) serverPlayers[msg.playerId].team = msg.team;
-        if (msg.playerId === myId) { myTeam = msg.team; updateTeamBadge(myTeam); }
-    },
-    new_wave(msg) {
-        playTone(520, 0.08, "triangle", 0.04, 820);
-        currentWave = msg.wave;
-        waveFlash = 50;
-        myShield = myMaxShield;
-        myHp = myMaxHp;
-        myBoostEnergy = 100;
-        myHeat = 0;
-        if (gameOver) {
-            gameOver = false;
-            if (overlay) {
-                overlay.classList.add("hidden");
-                overlay.style.pointerEvents = "auto";
-            }
-            lastShot = 0; particles = [];
-        }
-        updateHUD();
-    },
-    objective(msg) {
-        const zone = serverZones[msg.zoneId] || {};
-        zone.id = msg.zoneId;
-        zone.owner = msg.owner;
-        zone.label = msg.label || msg.zoneId;
-        zone.x = msg.x ?? zone.x;
-        zone.y = msg.y ?? zone.y;
-        zone.radius = msg.radius ?? zone.radius;
-        if (msg.owner === "red") zone.redProgress = msg.progress;
-        else if (msg.owner === "blue") zone.blueProgress = msg.progress;
-        else if (msg.owner === "enemies") zone.enemyProgress = msg.progress;
-        serverZones[msg.zoneId] = zone;
-        playObjectiveSound();
-        drawObjectiveHUD(serverZones);
-    },
-};
-
-function handleMsg(msg: any): void {
-    const handler = msgHandlers[msg.type];
-    if (handler) handler(msg);
-}
-
-let lastInputTime = 0;
-let lastInputState = { forward: 0, strafe: 0, angle: 0 };
-
-function sendInput(): void {
-    if (!socket || socket.readyState !== WebSocket.OPEN || gameOver) return;
-    let forward = 0, strafe = 0;
-    if (keys["w"] || keys["arrowup"]) forward += 1;
-    if (keys["s"] || keys["arrowdown"]) forward -= 1;
-    if (keys["a"] || keys["arrowleft"]) strafe -= 1;
-    if (keys["d"] || keys["arrowright"]) strafe += 1;
-    const p = serverPlayers[myId!];
-    let angle = p ? Math.atan2(my - p.y, mx - p.x) : 0;
-    angle = Math.round(angle * 100) / 100;
-    let angleDiff = Math.abs(angle - lastInputState.angle);
-    if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
-
-    if (forward !== lastInputState.forward ||
-        strafe !== lastInputState.strafe ||
-        angleDiff > 0.03) {
-        lastInputState = { forward, strafe, angle };
-        send("move", { forward, strafe, angle });
-    }
-}
-
-function updateHUD(): void {
-    if (scoreDisp) setDiff(scoreDisp, String(score || 0).padStart(6, "0"));
-    if (waveNumDisp) setDiff(waveNumDisp, String(currentWave || 1));
-    if (playerCountDisp) setDiff(playerCountDisp, String(Object.keys(serverPlayers).length));
-    drawWeaponHUD(myWeapon);
-    drawShieldHUD(myShield, myMaxShield);
-    drawHpHUD(myHp, myMaxHp);
-    drawEnergyHUD(myBoostEnergy);
-    drawHeatHUD(myHeat);
-    drawObjectiveHUD(serverZones);
-}
-
-function setStatus(s: string): void {
-    if (!connStatusEl) return;
-    const map: Record<string, [string, string]> = {
-        connecting: ["status-connecting", "◆ CONNECTING..."],
-        connected: ["status-connected", "◆ CONNECTED"],
-        disconnected: ["status-disconnected", "◆ DISCONNECTED"],
-    };
-    const entry: [string, string] = (map[s] ?? map["disconnected"])!;
-    const [cls, text] = entry;
-    connStatusEl.className = cls;
-    setDiff(connStatusEl, text);
-}
-
-function showGameOver(): void {
-    if (overlay) {
-        overlay.classList.remove("hidden");
-        overlay.style.background = "rgba(0,0,0,0.4)";
-        overlay.style.pointerEvents = "auto";
-    }
-    document.body.style.cursor = "default";
-    canvas.style.cursor = "default";
-    if (restartBtn) {
-        if (respawnState === "requesting") {
-            restartBtn.disabled = true;
-            setDiff(restartBtn, "RESPAWNING...");
-        } else {
-            restartBtn.disabled = false;
-            restartBtn.style.pointerEvents = "auto";
-        }
-    }
-    if (overlayScore) setDiff(overlayScore, `PUNTOS: ${String(score || 0).padStart(6, "0")}\nMODO ESPECTADOR (WASD)`);
-}
-
 restartBtn?.addEventListener("click", () => {
     if (respawnState === "requesting") return;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    respawnState = "requesting";
+    setRespawnState("requesting");
     restartBtn.disabled = true;
     setDiff(restartBtn, "RESPAWNING...");
     send("respawn");
     if (respawnTimer) clearTimeout(respawnTimer);
-    respawnTimer = setTimeout(() => {
-        respawnState = "idle";
+    setRespawnTimer(setTimeout(() => {
+        setRespawnState("idle");
         restartBtn.disabled = false;
         setDiff(restartBtn, "↻ RESPECTAR");
-        respawnTimer = null;
-    }, 5000);
+        setRespawnTimer(null);
+    }, 5000));
 });
 
-(function initTutorial(): void {
-    if (localStorage.getItem("speakerdust_tutorial_seen")) return;
-    const tut = document.createElement("div");
-    tut.id = "tutorial-overlay";
-    tut.innerHTML = `
-        <div style="background:rgba(0,0,0,0.85);color:#fff;padding:20px;border:1px solid #0ff;max-width:320px;text-align:left;font-family:monospace;box-shadow: 0 0 15px #0ff;">
-            <h3 style="color:#0ff; text-align:center;">CONTROLES</h3>
-            <p><b>WASD / Flechas</b> – Mover</p>
-            <p><b>Ratón</b> – Apuntar / Disparar</p>
-            <p><b>Q / Tab</b> – Cambiar arma</p>
-            <p><b>Shift / Click Der</b> – Turbo</p>
-            <p><b>1‑9</b> – Mensajes rápidos</p>
-            <p style="color:#aaa;font-size:0.8em;text-align:center;margin-top:15px;">Click para comenzar</p>
-        </div>`;
-    tut.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;z-index:200;";
-    document.body.appendChild(tut);
-    const dismiss = () => {
-        tut.remove();
-        localStorage.setItem("speakerdust_tutorial_seen", "1");
-        ensureAudio();
-    };
-    tut.addEventListener("click", dismiss);
-    window.addEventListener("keydown", dismiss, { once: true });
-})();
+let lastFrameTime = 0;
+let lastInputTime = 0;
+let accTime = 0;
+let lastInputState = { throttle: 0, strafe: 0, turn: 0, aimAngle: 0 };
 
-generateStars();
+function sendInput(): void {
+    if (!socket || socket.readyState !== WebSocket.OPEN || gameOver) return;
+    let throttle = 0, strafe = 0, turn = 0;
+    if (keys["w"] || keys["arrowup"]) throttle += 1;
+    if (keys["s"] || keys["arrowdown"]) throttle -= 1;
+    if (keys["a"] || keys["arrowleft"]) strafe -= 1;
+    if (keys["d"] || keys["arrowright"]) strafe += 1;
+    if (keys["q"] || keys["a"]) turn -= 1;
+    if (keys["e"] || keys["d"]) turn += 1;
+    const p = serverPlayers[myId!];
+    let aimAngle = p ? Math.atan2(my - p.y, mx - p.x) : 0;
+    aimAngle = Math.round(aimAngle * 100) / 100;
+    let angleDiff = Math.abs(aimAngle - lastInputState.aimAngle);
+    if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+    if (throttle !== lastInputState.throttle ||
+        strafe !== lastInputState.strafe ||
+        turn !== lastInputState.turn ||
+        angleDiff > 0.03) {
+        lastInputState.throttle = throttle;
+        lastInputState.strafe = strafe;
+        lastInputState.turn = turn;
+        lastInputState.aimAngle = aimAngle;
+        send("move", { throttle, strafe, turn, aimAngle });
+    }
+}
+
 canvas.style.cursor = "none";
+generateStars();
 
 function gameLoop(now: number): void {
     requestAnimationFrame(gameLoop);
@@ -1360,37 +667,26 @@ function gameLoop(now: number): void {
     const cameraCenterX = availW / 2;
     const cameraCenterY = availH / 2;
 
-    const dt = Math.min((now - lastFrameTime) / (1000 / 60), 3);
+    const rawDt = Math.min((now - lastFrameTime) / 1000, 0.05);
     lastFrameTime = now;
 
-    syncRenderState(renderPlayers, serverPlayers, dt, true);
-    syncRenderState(renderEnemies, serverEnemies, dt, true);
-    {
-        const elapsed = (performance.now() - lastTickTime) / 1000;
-        const next: Record<string, any> = {};
-        for (const id in serverBullets) {
-            const b = serverBullets[id];
-            next[id] = {
-                ...b,
-                x: b.x + (b.vx || 0) * elapsed,
-                y: b.y + (b.vy || 0) * elapsed,
-            };
-        }
-        renderBullets = next;
+    const smoothDt = rawDt * 60;
+    syncShipPhysics(renderPlayers, serverPlayers, smoothDt);
+    syncShipPhysics(renderEnemies, serverEnemies, smoothDt);
+    if (lastTickTime > 0) {
+        extrapolateBullets(serverBullets, lastTickTime);
     }
 
     const me = renderPlayers[myId!];
     if (me && !gameOver) {
-        cameraX = me.x - cameraCenterX;
-        cameraY = me.y - cameraCenterY;
+        setCameraPosition(me.x - cameraCenterX, me.y - cameraCenterY);
     } else if (gameOver) {
         let panX = 0, panY = 0;
         if (keys["w"] || keys["arrowup"]) panY -= 1;
         if (keys["s"] || keys["arrowdown"]) panY += 1;
         if (keys["a"] || keys["arrowleft"]) panX -= 1;
         if (keys["d"] || keys["arrowright"]) panX += 1;
-        cameraX += panX * SPECTATOR_CAM_SPEED;
-        cameraY += panY * SPECTATOR_CAM_SPEED;
+        offsetCamera(panX * SPECTATOR_CAM_SPEED, panY * SPECTATOR_CAM_SPEED);
     }
 
     mx = screenMx + cameraX;
@@ -1402,46 +698,81 @@ function gameLoop(now: number): void {
         lastInputTime = now;
     }
 
-    tickParticles();
-
-    let dreadnoughtNear = false;
-    for (const e of Object.values(renderEnemies)) {
-        if (e.shipClass === "dreadnought" && me && Math.hypot(e.x - me.x, e.y - me.y) < 150) {
-            dreadnoughtNear = true; break;
-        }
+    accTime += rawDt;
+    while (accTime >= FIXED_DT) {
+        tickParticles();
+        accTime -= FIXED_DT;
     }
-    if (dreadnoughtNear && Math.random() < 0.1) playTone(40, 0.1, "sine", 0.02, 35);
 
-    const shake = getScreenShakeOffset(now);
+    const nearAudioEnemy = me && Object.values(renderEnemies).some(e => {
+        const d = SHIP_CLASSES[e.shipClass || ""];
+        return d && d.nearAudioDistance > 0 && Math.hypot(e.x - me.x, e.y - me.y) < d.nearAudioDistance;
+    });
+    updateAudio(nearAudioEnemy);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    updateScreenShake(now);
 
-    ctx.scale(dpr, dpr);
-    ctx.translate(-cameraX - shake.x, -cameraY - shake.y);
+    ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2d.fillStyle = "#000000";
+    ctx2d.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx2d.scale(dpr, dpr);
+    ctx2d.translate(-cameraX - shakeX, -cameraY - shakeY);
 
     drawBackground();
     drawObjectives(serverZones);
     drawWaveFlash();
     drawBullets(renderBullets);
     drawEnemies(renderEnemies);
-    drawPlayers(renderPlayers, myId, mx, my, myShield);
-    drawParticles();
+    drawPlayers(
+        renderPlayers, myId, mx, my, myShield,
+        keys, myTeam, myWeapon, playerDamageFlashUntil,
+        myBoostEnergy, serverPlayers, gameOver,
+    );
+    drawParticles(ctx2d);
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+
+    if (waveFlash > 0) setWaveFlash(waveFlash - 1);
+
+    drawClassSelector();
 }
 
-window.addEventListener("click", () => { userInteracted = true; ensureAudio(); }, { once: true });
-window.addEventListener("keydown", () => { userInteracted = true; ensureAudio(); }, { once: true });
+function drawClassSelector(): void {
+    const dpr = window.devicePixelRatio || 1;
+    const myClass = serverPlayers[myId!]?.shipClass || "corvette";
+    const btnW = 88;
+    const btnH = 20;
+    const gap = 3;
+    const totalW = ALL_CLASSES.length * (btnW + gap) - gap;
+    const startX = (viewW - totalW) / 2;
+    const y = viewH - btnH - 6;
 
-document.addEventListener("visibilitychange", () => {
-    if (document.hidden && audioCtx) {
-        audioCtx.suspend().catch(() => { });
-    } else if (!document.hidden && audioCtx) {
-        audioCtx.resume().catch(() => { });
+    ctx2d.save();
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx2d.globalAlpha = 0.85;
+
+    for (let i = 0; i < ALL_CLASSES.length; i++) {
+        const cls = ALL_CLASSES[i]!;
+        const def = SHIP_CLASSES[cls];
+        if (!def) continue;
+        const x = startX + i * (btnW + gap);
+        const isSelected = cls === myClass;
+
+        ctx2d.fillStyle = isSelected ? def.glowColor : "#222";
+        ctx2d.fillRect(x, y, btnW, btnH);
+        ctx2d.strokeStyle = def.glowColor;
+        ctx2d.lineWidth = isSelected ? 2 : 1;
+        ctx2d.strokeRect(x, y, btnW, btnH);
+
+        ctx2d.fillStyle = "#fff";
+        ctx2d.font = "10px monospace";
+        ctx2d.textAlign = "center";
+        ctx2d.fillText(def.stats.label, x + btnW / 2, y + btnH / 2 + 3);
     }
-});
+
+    ctx2d.restore();
+}
 
 connect();
 requestAnimationFrame(gameLoop);

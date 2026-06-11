@@ -18,6 +18,8 @@ export interface PublicShip {
   vx: number;
   vy: number;
   angle: number;
+  heading: number;
+  angularVelocity: number;
   hp: number;
   maxHp: number;
   armor: number;
@@ -68,6 +70,8 @@ export function toPublicShip(s: Ship): PublicShip {
     vx: Math.round(s.vx * 100) / 100,
     vy: Math.round(s.vy * 100) / 100,
     angle: Math.round(s.angle * 100) / 100,
+    heading: Math.round(s.heading * 100) / 100,
+    angularVelocity: Math.round(s.angularVelocity * 1000) / 1000,
     hp: Math.round(s.hp),
     maxHp: s.maxHp,
     armor: Math.round(s.armor),

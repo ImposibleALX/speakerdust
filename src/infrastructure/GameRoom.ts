@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
 import type { GameState } from "../core/state";
-import type { Ship, Team, AiState } from "../core/ships/shipTypes";
+import type { Ship, Team, AiState, ShipClass } from "../core/ships/shipTypes";
 import type { WeaponKind } from "../core/combat/weaponStats";
-import { classStats, SHIP_BOOST_COST } from "../core/ships/shipStats";
+import { SHIP_CLASSES } from "@speakerdust/shared";
+import { SHIP_BOOST_COST, DEFAULT_PLAYER_CLASS } from "../core/ships/shipStats";
 import { TICK_MS, SAVE_EVERY_TICKS } from "../core/world/mapConfig";
 import { clamp, uuid } from "../core/math";
 import {
@@ -270,6 +271,17 @@ class GameRoom extends DurableObject<Env> {
         this.combat.tryFireWeapon(ship);
         break;
       }
+      case "changeClass": {
+        const cls = msg.shipClass as ShipClass;
+        if (cls && SHIP_CLASSES[cls] && cls !== ship.shipClass) {
+          ship.shipClass = cls;
+          respawnPlayer(ship);
+          this.persistence.markDirty();
+          this.safeSend(ws, { type: "respawned" });
+          this.safeSend(ws, { type: "weapon_changed", weapon: ship.weapon });
+        }
+        break;
+      }
     }
   }
 
@@ -345,16 +357,35 @@ class GameRoom extends DurableObject<Env> {
   private processPlayerMovement(player: Ship, msg: any): void {
     if (typeof msg.seq === "number") player.inputSeq = msg.seq;
 
-    const hasLocal = typeof msg.forward === "number" || typeof msg.strafe === "number";
+    // New format: throttle, strafe, turn, aimAngle
+    // Old format: forward, strafe, angle (backward compatible)
+    const hasNewFormat = typeof msg.throttle === "number" || typeof msg.strafe === "number" || typeof msg.turn === "number";
+    const hasOldFormat = typeof msg.forward === "number" || typeof msg.strafe === "number";
     const hasWorld = typeof msg.vx === "number" || typeof msg.vy === "number";
 
-    if (hasLocal) {
+    if (hasNewFormat) {
+      let f = clamp(Number(msg.throttle ?? 0), -1, 1);
+      let s = clamp(Number(msg.strafe ?? 0), -1, 1);
+      const mag = Math.hypot(f, s);
+      if (mag > 1) { f /= mag; s /= mag; }
+      player.inputForward = f;
+      player.inputStrafe = s;
+      if (typeof msg.turn === "number") {
+        player.inputTurn = clamp(Number(msg.turn), -1, 1);
+      }
+      if (typeof msg.aimAngle === "number") {
+        player.targetAngle = msg.aimAngle;
+      }
+    } else if (hasOldFormat) {
       let f = clamp(Number(msg.forward ?? 0), -1, 1);
       let s = clamp(Number(msg.strafe ?? 0), -1, 1);
       const mag = Math.hypot(f, s);
       if (mag > 1) { f /= mag; s /= mag; }
       player.inputForward = f;
       player.inputStrafe = s;
+      if (typeof msg.angle === "number") {
+        player.targetAngle = msg.angle;
+      }
     } else if (hasWorld) {
       const rawX = clamp(Number(msg.vx ?? 0), -1, 1);
       const rawY = clamp(Number(msg.vy ?? 0), -1, 1);
@@ -365,10 +396,6 @@ class GameRoom extends DurableObject<Env> {
     } else {
       player.inputForward = 0;
       player.inputStrafe = 0;
-    }
-
-    if (typeof msg.angle === "number") {
-      player.targetAngle = msg.angle;
     }
   }
 
@@ -424,6 +451,6 @@ class GameRoom extends DurableObject<Env> {
   }
 
   private getEnemyScore(ship: Ship): number {
-    return classStats(ship.shipClass).score;
+    return (SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!).stats.score;
   }
 }

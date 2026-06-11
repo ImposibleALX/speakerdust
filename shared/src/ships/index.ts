@@ -1,3 +1,2 @@
-export type { AttachmentPoint, ShipAttachments, Loadout, MountArc, PaletteIndex, PixelGrid, ShipBitmapKey } from "./shipAttachments";
-
-export { SHIP_ATTACHMENTS, DEFAULT_LOADOUTS } from "./shipAttachments";
+export type { ShipClassDef, ShipGameplayStats, ShipAI, ExplosionConfig } from "./ShipClassDef";
+export { SHIP_CLASSES } from "./shipClasses";

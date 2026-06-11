@@ -12,6 +12,13 @@ export type {
 
 export { WEAPON_DEFS, WEAPON_STATS, EMP_DURATION_TICKS, HITBOX_PLAYER_BULLET_DEFAULT_SQ, HITBOX_ENEMY_BULLET_SQ } from "./weapons/weaponDefs";
 
-export type { AttachmentPoint, ShipAttachments, Loadout, MountArc, PaletteIndex, PixelGrid, ShipBitmapKey } from "./ships/shipAttachments";
+export type { ShipClassDef, ShipGameplayStats, ShipAI, ExplosionConfig } from "./ships";
 
-export { SHIP_ATTACHMENTS, DEFAULT_LOADOUTS } from "./ships/shipAttachments";
+export { SHIP_CLASSES } from "./ships";
+
+export * from "./sprite";
+export * from "./physics";
+export { checkBulletHit, checkBeamHit } from "./collision/pixelCollision";
+export type { CollisionGrid } from "./collision/pixelCollision";
+export { decomposePixels, checkShipCollision } from "./collision/convexDecomposition";
+export type { Rect } from "./collision/convexDecomposition";
