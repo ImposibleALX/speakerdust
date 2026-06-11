@@ -51,7 +51,7 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
     ai: {
       targetId: undefined,
       lastSeenPos: undefined,
-      reactionTicks: Math.floor(rand(4, 12)),
+      reactionTicks: Math.floor(rand(20, 45)),
       aimJitter: aiCfg.aimJitter,
       maneuverTimer: Math.floor(rand(30, 90)),
       maneuverDir: (Math.random() < 0.5 ? -1 : 1) as -1 | 1,
@@ -145,7 +145,7 @@ export function updateEnemyInputs(
     if (target) {
       ai.targetId = target.id;
       ai.lastSeenPos = { x: target.x, y: target.y };
-      ai.reactionTicks = Math.floor(rand(4, 10));
+      ai.reactionTicks = Math.floor(rand(15, 30));
       ai.frustration = 0;
     } else {
       ai.targetId = undefined;
@@ -177,8 +177,8 @@ export function updateEnemyInputs(
 
     const predictX = target.x + target.vx * leadMul;
     const predictY = target.y + target.vy * leadMul;
-    const noisyX = predictX + (Math.random() - 0.5) * 24;
-    const noisyY = predictY + (Math.random() - 0.5) * 24;
+    const noisyX = predictX + (Math.random() - 0.5) * 60;
+    const noisyY = predictY + (Math.random() - 0.5) * 60;
 
     const rawAngle = Math.atan2(noisyY - enemy.y, noisyX - enemy.x);
 

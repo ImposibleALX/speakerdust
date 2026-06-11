@@ -118,7 +118,31 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     }
   }
 
+  function drawHitboxOverlay(
+    sprite: Sprite,
+    cx: number,
+    cy: number,
+    angle: number,
+    ps: number,
+  ): void {
+    const { w, h, pixels } = sprite;
+    const halfW = Math.floor(w * ps / 2);
+    const halfH = Math.floor(h * ps / 2);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.fillStyle = "rgba(0, 255, 255, 0.35)";
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        if (!pixels[r * w + c]) continue;
+        ctx.fillRect(c * ps - halfW, r * ps - halfH, ps, ps);
+      }
+    }
+    ctx.restore();
+  }
+
   return {
     drawPixelShip,
+    drawHitboxOverlay,
   };
 }

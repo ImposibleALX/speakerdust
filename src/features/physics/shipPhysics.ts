@@ -10,10 +10,10 @@ export function createShipPhysics(shipClass: ShipClass): ShipPhysics {
 }
 
 export function initShipPhysicsFromShip(physics: ShipPhysics, ship: Ship): void {
-  physics.reset(ship.x, ship.y, ship.angle);
+  physics.reset(ship.x, ship.y, ship.heading);
   physics.velocity.x = ship.vx;
   physics.velocity.y = ship.vy;
-  physics.heading = ship.angle;
+  physics.heading = ship.heading;
   physics.angularVelocity = 0;
 }
 

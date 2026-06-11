@@ -146,5 +146,3 @@ export const WEAPON_DEFS: Record<WeaponKind, WeaponDefinition> = {
 };
 
 export const EMP_DURATION_TICKS = 80;
-export const HITBOX_PLAYER_BULLET_DEFAULT_SQ = 18 * 18;
-export const HITBOX_ENEMY_BULLET_SQ = 18 * 18;

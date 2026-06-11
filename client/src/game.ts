@@ -59,7 +59,7 @@ export function resizeCanvas(): void {
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
-const { drawPixelShip } = createPixelShipRenderer(ctx2d);
+const { drawPixelShip, drawHitboxOverlay } = createPixelShipRenderer(ctx2d);
 
 interface Star {
     x: number; y: number; size: number; speed: number;
@@ -365,6 +365,7 @@ function drawEnemies(enemies: Record<string, any>): void {
         ctx2d.shadowColor = glowC;
         drawPixelShip(def, rx, ry, e.heading ?? e.angle, pal, ps);
         ctx2d.shadowBlur = 0;
+        if (showHitboxOverlay) drawHitboxOverlay(def, rx, ry, e.heading ?? e.angle, ps);
 
         const maxHpSafe = e.maxHp > 0 ? e.maxHp : 10;
         const pct = Math.max(0, Math.min(1, e.hp / maxHpSafe));
@@ -404,7 +405,8 @@ function drawPlayers(
         ctx2d.shadowColor = teamGlow;
         const playerDef = SHIP_CLASSES[p.shipClass || "corvette"];
         if (playerDef) {
-            drawPixelShip(playerDef, prx, pry, p.heading ?? p.angle, pal, isMe ? 3 : 2, playerDef.defaultLoadout, Math.floor(performance.now() / 50));
+            drawPixelShip(playerDef, prx, pry, p.heading ?? p.angle, pal, 3, playerDef.defaultLoadout, Math.floor(performance.now() / 50));
+            if (showHitboxOverlay) drawHitboxOverlay(playerDef, prx, pry, p.heading ?? p.angle, 3);
         }
         ctx2d.shadowBlur = 0;
 
@@ -480,7 +482,12 @@ function drawPlayers(
 const keys: Record<string, boolean> = {};
 let isMouseShooting = false;
 
+let showHitboxOverlay = false;
+
 window.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key.toLowerCase() === "g" && !keys["g"]) {
+        showHitboxOverlay = !showHitboxOverlay;
+    }
     keys[e.key.toLowerCase()] = true;
     if (!e.ctrlKey && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") {
         const idx = parseInt(e.key) - 1;

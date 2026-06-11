@@ -114,38 +114,27 @@ export function syncShipPhysics(renderMap: Record<string, any>, serverMap: Recor
     }
 }
 
-const bulletSpawnData: Record<string, { spawnX: number; spawnY: number; spawnTick: number }> = {};
-
 /**
- * Extrapolación de Balas autoritativa usando spawnTick.
- * Posición = spawnX + vx * (currentServerTick - spawnTick)
- * vx/vy están en px/tick (unidad del servidor).
+ * Interpolación de balas autoritativa.
+ * Usa suavizado exponencial para converger a la posición del servidor,
+ * evitando la extrapolación lineal desde spawn que rompe misiles guiados (torpedo/guided_missile).
  */
-export function extrapolateBullets(serverBullets: Record<string, any>, _lastTickTime: number): void {
-    const currentTick = currentServerTick;
+export function extrapolateBullets(serverBullets: Record<string, any>, lastTickTime: number): void {
+    const dt = Math.min((performance.now() - lastTickTime) / 1000, 0.1);
+    const alpha = 1 - Math.pow(1 - 0.6, dt * 60);
 
     for (const id in serverBullets) {
         const b = serverBullets[id];
 
-        if (!bulletSpawnData[id]) {
-            bulletSpawnData[id] = {
-                spawnX: b.x,
-                spawnY: b.y,
-                spawnTick: b.spawnTick ?? 0,
-            };
-        }
-
-        const spawn = bulletSpawnData[id];
-        let tickDelta = currentTick - spawn.spawnTick;
-        if (tickDelta < 0) tickDelta = 0;
-
         if (!renderBullets[id]) {
             renderBullets[id] = { ...b };
+        } else {
+            const r = renderBullets[id];
+            r.x += (b.x - r.x) * alpha;
+            r.y += (b.y - r.y) * alpha;
         }
 
         const r = renderBullets[id];
-        r.x = spawn.spawnX + (b.vx || 0) * tickDelta;
-        r.y = spawn.spawnY + (b.vy || 0) * tickDelta;
         r.angle = b.angle;
         r.kind = b.kind;
         r.vx = b.vx;
@@ -155,7 +144,6 @@ export function extrapolateBullets(serverBullets: Record<string, any>, _lastTick
     for (const id in renderBullets) {
         if (!serverBullets[id]) {
             delete renderBullets[id];
-            delete bulletSpawnData[id];
         }
     }
 }

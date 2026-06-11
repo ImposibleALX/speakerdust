@@ -143,6 +143,8 @@ export class BulletProjectile extends Projectile {
   tick(ships: Record<string, Ship>): TickResult {
     if (!this._alive) return { hits: [], explosions: [], x: this.x, y: this.y };
 
+    const prevX = this.x;
+    const prevY = this.y;
     this.x += this.vx;
     this.y += this.vy;
     this.life--;
@@ -173,7 +175,7 @@ export class BulletProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius)) continue;
+      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
 
       this._alive = false;
       hits.push({
@@ -264,6 +266,9 @@ export class MissileProjectile extends Projectile {
   tick(ships: Record<string, Ship>): TickResult {
     if (!this._alive) return { hits: [], explosions: [], x: this.x, y: this.y };
 
+    const prevX = this.x;
+    const prevY = this.y;
+
     if (this.targetId) {
       const target = ships[this.targetId];
       if (target?.alive) {
@@ -296,7 +301,7 @@ export class MissileProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius)) continue;
+      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
 
       this._alive = false;
       hits.push({

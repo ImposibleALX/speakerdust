@@ -1,6 +1,5 @@
 import type { ShipConfig } from "../physics/shipPhysics";
 import type { Attachment } from "../sprite/spriteTypes";
-import { decomposePixels } from "../collision/convexDecomposition";
 import type { ShipClassDef, ShipGameplayStats, ShipAI, ExplosionConfig } from "./ShipClassDef";
 import type { WeaponKind } from "../weapons/weaponDefs";
 
@@ -134,13 +133,13 @@ const LOADOUTS: Record<string, Record<string, WeaponKind>> = {
 };
 
 const AI_DATA: Record<string, ShipAI> = {
-  corvette: { aimJitter: 0.07, leadMul: 14, aimNoise: 0.09, maxAimError: 0.34, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  destroyer: { aimJitter: 0.07, leadMul: 14, aimNoise: 0.07, maxAimError: 0.34, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
-  missile_frigate: { aimJitter: 0.04, leadMul: 14, aimNoise: 0.06, maxAimError: 0.34, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  cruiser: { aimJitter: 0.04, leadMul: 14, aimNoise: 0.05, maxAimError: 0.30, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
-  battlecruiser: { aimJitter: 0.04, leadMul: 14, aimNoise: 0.04, maxAimError: 0.34, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  battleship: { aimJitter: 0.04, leadMul: 22, aimNoise: 0.04, maxAimError: 0.26, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
-  dreadnought: { aimJitter: 0.04, leadMul: 22, aimNoise: 0.04, maxAimError: 0.26, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
+  corvette: { aimJitter: 0.12, leadMul: 10, aimNoise: 0.14, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
+  destroyer: { aimJitter: 0.12, leadMul: 10, aimNoise: 0.12, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
+  missile_frigate: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.10, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
+  cruiser: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.09, maxAimError: 0.40, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
+  battlecruiser: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.08, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
+  battleship: { aimJitter: 0.06, leadMul: 16, aimNoise: 0.08, maxAimError: 0.38, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
+  dreadnought: { aimJitter: 0.06, leadMul: 16, aimNoise: 0.08, maxAimError: 0.38, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
 };
 
 const EXPLOSION_DATA: Record<string, ExplosionConfig> = {
@@ -198,9 +197,6 @@ function build(id: string, spr: { pixels: Uint8Array; w: number; h: number }, at
     }
   }
 
-  // Descomposición Convexa para las colisiones de NAVE vs NAVE
-  const rects = decomposePixels(spr.pixels, spr.w, spr.h, cx, cy);
-
   return {
     physics: PHYS[id]!,
     stats: STATS[id]!,
@@ -214,8 +210,7 @@ function build(id: string, spr: { pixels: Uint8Array; w: number; h: number }, at
     h: spr.h,
     attachments: att,
     spriteCenter: { x: cx, y: cy },
-    boundingRadius: Math.sqrt(maxRSq), // Broad-Phase infalible
-    rects,                  // Array de polígonos convexos (Para Nave vs Nave)
+    boundingRadius: Math.sqrt(maxRSq) * 3, // Broad-Phase infalible (ajustado por pixel scale = 3)
     defaultLoadout: LOADOUTS[id]!,
   };
 }

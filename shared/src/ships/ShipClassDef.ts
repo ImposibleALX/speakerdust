@@ -1,7 +1,6 @@
 import type { WeaponKind } from "../weapons/weaponDefs";
 import type { ShipConfig } from "../physics/shipPhysics";
 import type { Attachment } from "../sprite/spriteTypes";
-import type { Rect } from "../collision/convexDecomposition";
 
 export interface ShipGameplayStats {
   label: string;
@@ -52,6 +51,5 @@ export interface ShipClassDef {
   readonly attachments: readonly Attachment[];
   readonly spriteCenter: { readonly x: number; readonly y: number };
   readonly boundingRadius: number;
-  readonly rects: readonly Rect[];
   readonly defaultLoadout: Record<string, WeaponKind>;
 }

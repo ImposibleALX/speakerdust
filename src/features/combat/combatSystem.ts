@@ -147,7 +147,9 @@ export class CombatSystem {
     }
 
     if (result.dead) {
-      delete state.ships[target.id];
+      if (target.controller === "ai") {
+        delete state.ships[target.id];
+      }
       if (owner) {
         owner.score += target.controller === "ai" ? (SHIP_CLASSES[target.shipClass] ?? SHIP_CLASSES.corvette!).stats.score : 100;
       }
@@ -188,7 +190,6 @@ export class CombatSystem {
         if (result.dead) {
           owner.score += 100;
           this.broadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
-          delete state.ships[player.id];
         }
       }
     }
