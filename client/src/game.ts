@@ -262,6 +262,10 @@ function drawBullets(bullets: Record<string, any>): void {
             ctx2d.shadowBlur = 12; ctx2d.shadowColor = "#66ccff";
             ctx2d.fillStyle = "#ccffff"; ctx2d.fillRect(-4, -4, 8, 8);
             ctx2d.globalAlpha = 0.4; ctx2d.fillStyle = "#3399ff"; ctx2d.fillRect(-8, -8, 16, 16);
+        } else if (kind === "point_defense") {
+            ctx2d.shadowBlur = 6; ctx2d.shadowColor = "#66ffcc";
+            ctx2d.fillStyle = "#66ffcc"; ctx2d.fillRect(-1, -1, 2, 2);
+            ctx2d.globalAlpha = 0.5; ctx2d.fillStyle = "#aaffee"; ctx2d.fillRect(-3, -3, 6, 6);
         } else {
             ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-2, -2, 4, 4);
         }

@@ -18,13 +18,22 @@ export interface ShipGameplayStats {
 }
 
 export interface ShipAI {
-  aimJitter: number;
+  /** How many ticks to lock target before tracking perfectly */
+  lockTicks: number;
+  /** Lead multiplier for aim prediction */
   leadMul: number;
-  aimNoise: number;
-  maxAimError: number;
+  /** Angular tolerance in radians for considering a shot on-target */
+  aimTolerance: number;
+  /** Speed multiplier when closing to ideal range */
   seekSpeed: number;
+  /** Speed multiplier when backing away from ideal range */
   retreatSpeed: number;
+  /** Lateral movement power for orbit/evasion */
   orbitPower: number;
+  /** Whether this ship uses boost aggressively */
+  boostAggression: number;
+  /** Distance at which ship starts evading (0 = never) */
+  evasionRange: number;
 }
 
 export interface ExplosionConfig {

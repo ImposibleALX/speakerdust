@@ -1,4 +1,5 @@
-import type { Ship, ShipClass, Team } from "../../core/ships/shipTypes";
+import type { ShipClass, Team } from "../../core/ships/shipTypes";
+import { Ship } from "../../core/ships/Ship";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
 import type { ControlPoint } from "../../core/world/zones";
@@ -47,6 +48,7 @@ export function hydrateState(stored: unknown): GameState | null {
 
   return {
     ships,
+    players: {},
     projectiles: {},
     zones,
     wave: typeof s.wave === "number" ? Math.max(1, s.wave) : 1,
@@ -54,15 +56,15 @@ export function hydrateState(stored: unknown): GameState | null {
   };
 }
 
-function num(v: unknown, def: number): number {
+function coerceNumber(v: unknown, def: number): number {
   return typeof v === "number" && isFinite(v) ? v : def;
 }
-function str<T extends string>(v: unknown, def: T, allowed?: readonly T[]): T {
+function coerceString<T extends string>(v: unknown, def: T, allowed?: readonly T[]): T {
   if (typeof v !== "string") return def;
   if (allowed && !allowed.includes(v as T)) return def;
   return v as T;
 }
-function bool(v: unknown, def: boolean): boolean {
+function coerceBool(v: unknown, def: boolean): boolean {
   return typeof v === "boolean" ? v : def;
 }
 function weaponList(v: unknown, def: WeaponKind[]): WeaponKind[] {
@@ -75,56 +77,59 @@ class ShipSerializer {
   static normalise(raw: unknown): Ship | null {
     if (!raw || typeof raw !== "object") return null;
     const r = raw as Record<string, unknown>;
-    const shipClass = str<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASSES) as ShipClass[]);
+    const shipClass = coerceString<ShipClass>(r.shipClass, DEFAULT_PLAYER_CLASS, Object.keys(SHIP_CLASSES) as ShipClass[]);
     const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
     const stats = def.stats;
-    const phys = def.physics;
-    const slots = weaponList(r.weaponSlots, [...stats.weaponSlots]);
-    const weapon = str<WeaponKind>(r.weapon, slots[0]!, slots);
-    const controller = str(r.controller, "player", ["player", "ai"] as const);
-    return {
-      id: str(r.id, "unknown"),
+    const controller = coerceString(r.controller, "player", ["player", "ai"] as const);
+
+    const ship = new Ship({
+      id: coerceString(r.id, "unknown"),
       controller,
       shipClass,
-      role: str(r.role, stats.role),
-      mass: num(r.mass, phys.mass),
-      turnRate: num(r.turnRate, phys.maxAngularSpeed),
-      weaponSlots: slots,
-      x: num(r.x, 600), y: num(r.y, 400),
-      vx: num(r.vx, 0), vy: num(r.vy, 0),
-      angle: num(r.angle, -Math.PI / 2),
-      targetAngle: num(r.targetAngle, -Math.PI / 2),
-      hp: num(r.hp, stats.maxHp),
-      maxHp: num(r.maxHp, stats.maxHp),
-      armor: num(r.armor, stats.armorMax),
-      armorMax: num(r.armorMax, stats.armorMax),
-      shieldMax: num(r.shieldMax, stats.shieldMax),
-      shield: num(r.shield, stats.shieldMax),
-      shieldRegenDelay: num(r.shieldRegenDelay, 0),
-      weapon,
-      shootCooldown: num(r.shootCooldown, 0),
-      weaponHeat: num(r.weaponHeat, 0),
-      boostEnergy: num(r.boostEnergy, 100),
-      boostCooldown: num(r.boostCooldown, 0),
-      boostQueued: false,
-      empTicks: num(r.empTicks, 0),
-      inputForward: 0, inputStrafe: 0, inputTurn: 0,
-      heading: num(r.heading, -Math.PI / 2),
-      angularVelocity: num(r.angularVelocity, 0),
-      iFrames: num(r.iFrames, 0),
-      alive: bool(r.alive, true),
-      drag: num(r.drag, phys.linearDrag),
-      maxSpeed: num(r.maxSpeed, phys.maxLinearSpeed),
-      thrustForce: num(r.thrustForce, phys.thrustAccel),
-      strafeThrustForce: num(r.strafeThrustForce, phys.strafeAccel),
-      name: str(r.name, ""),
-      color: str(r.color, "hsl(180,80%,65%)"),
-      team: str(r.team, "red", ["red", "blue", "spectator"] as const),
-      score: num(r.score, 0),
-      isAdmin: bool(r.isAdmin, false),
-      godmode: bool(r.godmode, false),
-      inputSeq: num(r.inputSeq, 0),
-    };
+      x: coerceNumber(r.x, 600),
+      y: coerceNumber(r.y, 400),
+      angle: coerceNumber(r.angle, -Math.PI / 2),
+    });
+
+    const slots = weaponList(r.weaponSlots, [...stats.weaponSlots]);
+    ship.weaponSlots = slots;
+    ship.weapon = coerceString<WeaponKind>(r.weapon, slots[0]!, slots);
+    ship.vx = coerceNumber(r.vx, 0);
+    ship.vy = coerceNumber(r.vy, 0);
+    ship.targetAngle = coerceNumber(r.targetAngle, -Math.PI / 2);
+    ship.hp = coerceNumber(r.hp, stats.maxHp);
+    ship.armor = coerceNumber(r.armor, stats.armorMax);
+    ship.shield = coerceNumber(r.shield, stats.shieldMax);
+    ship.shieldRegenDelay = coerceNumber(r.shieldRegenDelay, 0);
+    if (Array.isArray(r.turretMounts)) {
+      for (let i = 0; i < Math.min(r.turretMounts.length, ship.turretMounts.length); i++) {
+        const rm = r.turretMounts[i];
+        if (!rm) continue;
+        const sm = ship.turretMounts[i]!;
+        sm.cooldown = coerceNumber(rm.cooldown, 0);
+        sm.heat = coerceNumber(rm.heat, 0);
+        sm.enabled = coerceBool(rm.enabled, true);
+        sm.angle = coerceNumber(rm.angle, sm.restAngle);
+        sm.targetAngle = coerceNumber(rm.targetAngle, sm.restAngle);
+      }
+    }
+    ship.boostEnergy = coerceNumber(r.boostEnergy, 100);
+    ship.boostCooldown = coerceNumber(r.boostCooldown, 0);
+    ship.boostQueued = coerceBool(r.boostQueued, false);
+    ship.empTicks = coerceNumber(r.empTicks, 0);
+    ship.heading = coerceNumber(r.heading, -Math.PI / 2);
+    ship.angularVelocity = coerceNumber(r.angularVelocity, 0);
+    ship.iFrames = coerceNumber(r.iFrames, 0);
+    ship.alive = coerceBool(r.alive, true);
+    ship.name = coerceString(r.name, "");
+    ship.color = coerceString(r.color, "hsl(180,80%,65%)");
+    ship.team = coerceString(r.team, "red", ["red", "blue", "spectator"] as const);
+    ship.score = coerceNumber(r.score, 0);
+    ship.isAdmin = coerceBool(r.isAdmin, false);
+    ship.godmode = coerceBool(r.godmode, false);
+    ship.inputSeq = coerceNumber(r.inputSeq, 0);
+
+    return ship;
   }
 }
 
@@ -136,10 +141,10 @@ function normaliseZones(raw: Record<string, ControlPoint>): Record<string, Contr
     if (!f) continue;
     out[id] = {
       ...f,
-      owner: str(z.owner, "neutral", ["neutral", "red", "blue", "enemies"] as const),
-      redProgress: num(z.redProgress, 0),
-      blueProgress: num(z.blueProgress, 0),
-      enemyProgress: num(z.enemyProgress, 0),
+      owner: coerceString(z.owner, "neutral", ["neutral", "red", "blue", "enemies"] as const),
+      redProgress: coerceNumber(z.redProgress, 0),
+      blueProgress: coerceNumber(z.blueProgress, 0),
+      enemyProgress: coerceNumber(z.enemyProgress, 0),
     };
   }
   for (const [id, f] of Object.entries(fresh)) if (!out[id]) out[id] = f;

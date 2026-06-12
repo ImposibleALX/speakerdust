@@ -123,7 +123,7 @@ export interface RateLimitState {
  */
 export const rateLimits = new WeakMap<WebSocket, RateLimitState>();
 
-export function getRateLimit(ws: WebSocket): RateLimitState {
+export function getOrCreateRateLimit(ws: WebSocket): RateLimitState {
   let s = rateLimits.get(ws);
   if (!s) {
     s = { lastMoveMs: 0, lastShootMs: 0, lastBoostMs: 0 };
@@ -133,7 +133,7 @@ export function getRateLimit(ws: WebSocket): RateLimitState {
 }
 
 export function checkMoveRate(ws: WebSocket): boolean {
-  const s = getRateLimit(ws);
+  const s = getOrCreateRateLimit(ws);
   const now = Date.now();
   if (now - s.lastMoveMs < RATE_LIMIT_MOVE_MS) return false;
   s.lastMoveMs = now;
@@ -141,7 +141,7 @@ export function checkMoveRate(ws: WebSocket): boolean {
 }
 
 export function checkShootRate(ws: WebSocket): boolean {
-  const s = getRateLimit(ws);
+  const s = getOrCreateRateLimit(ws);
   const now = Date.now();
   if (now - s.lastShootMs < RATE_LIMIT_SHOOT_MS) return false;
   s.lastShootMs = now;
@@ -149,7 +149,7 @@ export function checkShootRate(ws: WebSocket): boolean {
 }
 
 export function checkBoostRate(ws: WebSocket): boolean {
-  const s = getRateLimit(ws);
+  const s = getOrCreateRateLimit(ws);
   const now = Date.now();
   if (now - s.lastBoostMs < RATE_LIMIT_BOOST_MS) return false;
   s.lastBoostMs = now;

@@ -1,4 +1,5 @@
 import type { WeaponKind } from "../combat/weaponStats";
+import type { MountArc } from "../combat/patterns";
 
 export type Controller = "player" | "ai";
 export type Team = "red" | "blue" | "spectator";
@@ -12,77 +13,21 @@ export type ShipClass =
   | "battleship"
   | "dreadnought";
 
-export interface Ship {
-  id: string;
-  controller: Controller;
-  shipClass: ShipClass;
+export { Ship } from "./Ship";
 
-  role?: string;
-
-  // Physics
-  mass: number;
-  turnRate: number;
-  drag: number;
-  maxSpeed: number;
-  thrustForce: number;
-  strafeThrustForce: number;
-
-  // Weapons
-  weaponSlots: WeaponKind[];
-  weapon: WeaponKind;
-  shootCooldown: number;
-  weaponHeat: number;
-
-  // Defense
-  hp: number;
-  maxHp: number;
-  armor: number;
-  armorMax: number;
-  shieldMax: number;
-  shield: number;
-  shieldRegenDelay: number;
-  iFrames: number;
-
-  // Boost
-  boostEnergy: number;
-  boostCooldown: number;
-  boostQueued: boolean;
-
-  // Status
-  empTicks: number;
-  alive: boolean;
-
-  // Control
-  inputForward: number;
-  inputStrafe: number;
-  inputTurn: number;
-  angle: number;
-  targetAngle: number;
+export interface TurretMount {
+  attachmentId: string;
+  weaponKind: WeaponKind;
+  mountArc: MountArc;
   x: number;
   y: number;
-  vx: number;
-  vy: number;
-
-  // New physics fields
-  heading: number;
-  angularVelocity: number;
-
-  // Physics engine instance (non-serialized, attached at runtime)
-  _physics?: import("@speakerdust/shared").ShipPhysics;
-
-  // Optional stat overrides
-  heatCoolRate?: number;
-  shieldRegenInterval?: number;
-  boostRegenRate?: number;
-
-  // Player-only fields (defaults for AI)
-  name: string;
-  color: string;
-  team: Team;
-  score: number;
-  isAdmin: boolean;
-  godmode: boolean;
-  inputSeq: number;
+  size: "small" | "medium" | "large";
+  restAngle: number;
+  angle: number;
+  targetAngle: number;
+  cooldown: number;
+  heat: number;
+  enabled: boolean;
 }
 
 /** AI memory stored externally, keyed by ship id */

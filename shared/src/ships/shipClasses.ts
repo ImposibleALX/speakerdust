@@ -6,7 +6,7 @@ import type { WeaponKind } from "../weapons/weaponDefs";
 /**
  * Convierte la matriz visual 2D a un Uint8Array (Array 1D) O(1) de altísimo rendimiento para V8.
  */
-function px(grid: number[][]): { pixels: Uint8Array; w: number; h: number } {
+function gridToPixels(grid: number[][]): { pixels: Uint8Array; w: number; h: number } {
   const h = grid.length;
   const w = h > 0 ? grid[0]!.length : 0;
   const pixels = new Uint8Array(w * h);
@@ -19,7 +19,7 @@ function px(grid: number[][]): { pixels: Uint8Array; w: number; h: number } {
   return { pixels, w, h };
 }
 
-function atts(list: Array<{ id: string; x: number; y: number; mountArc: "forward" | "broadside" | "omni"; size: "small" | "medium" | "large" }>, kind: Attachment["kind"]): Attachment[] {
+function buildAttachments(list: Array<{ id: string; x: number; y: number; mountArc: "forward" | "broadside" | "omni"; size: "small" | "medium" | "large" }>, kind: Attachment["kind"]): Attachment[] {
   return list.map(a => ({ id: a.id, kind, x: a.x, y: a.y, mountArc: a.mountArc, size: a.size, tags: [] }));
 }
 
@@ -40,12 +40,14 @@ const _PLAYER_GRID = [
   [0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 0, 0, 0, 0],
 ];
 const _PLAYER_ATTACHMENTS: Attachment[] = [
-  ...atts([{ id: "engine_main", x: 8, y: 0, mountArc: "forward" as const, size: "medium" as const }], "engine"),
-  ...atts([{ id: "mount_front", x: -8, y: 0, mountArc: "forward" as const, size: "medium" as const },
-  { id: "mount_left", x: 0, y: 4, mountArc: "broadside" as const, size: "small" as const },
-  { id: "mount_right", x: 0, y: -4, mountArc: "broadside" as const, size: "small" as const }], "weapon_mount"),
+  ...buildAttachments([{ id: "engine_main", x: -8, y: 0, mountArc: "forward" as const, size: "medium" as const }], "engine"),
+  ...buildAttachments([{ id: "mount_front", x: 8, y: 0, mountArc: "forward" as const, size: "medium" as const },
+  { id: "mount_left", x: -1, y: 4, mountArc: "broadside" as const, size: "small" as const },
+  { id: "mount_right", x: 1, y: -4, mountArc: "broadside" as const, size: "small" as const },
+  { id: "pdc_front_left", x: 4, y: 2, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_front_right", x: 4, y: -2, mountArc: "omni" as const, size: "small" as const }], "weapon_mount"),
 ];
-const P = px(_PLAYER_GRID);
+const P = gridToPixels(_PLAYER_GRID);
 
 // ---- Cruiser sprite (destroyer, missile_frigate, cruiser) ----
 const _CRUISER_GRID = [
@@ -64,13 +66,16 @@ const _CRUISER_GRID = [
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 const _CRUISER_ATTACHMENTS: Attachment[] = [
-  ...atts([{ id: "engine_left", x: 6.5, y: 2, mountArc: "forward" as const, size: "medium" as const },
-  { id: "engine_right", x: 6.5, y: -2, mountArc: "forward" as const, size: "medium" as const }], "engine"),
-  ...atts([{ id: "mount_front", x: -6.5, y: 0, mountArc: "forward" as const, size: "large" as const },
-  { id: "mount_left", x: -0.5, y: 5, mountArc: "broadside" as const, size: "medium" as const },
-  { id: "mount_right", x: -0.5, y: -5, mountArc: "broadside" as const, size: "medium" as const }], "weapon_mount"),
+  ...buildAttachments([{ id: "engine_left", x: -5, y: 1, mountArc: "forward" as const, size: "medium" as const },
+  { id: "engine_right", x: -5, y: -1, mountArc: "forward" as const, size: "medium" as const }], "engine"),
+  ...buildAttachments([{ id: "mount_front", x: 6.5, y: 0, mountArc: "forward" as const, size: "large" as const },
+  { id: "mount_left", x: -0.5, y: 4, mountArc: "broadside" as const, size: "medium" as const },
+  { id: "mount_right", x: 0.5, y: -5, mountArc: "broadside" as const, size: "medium" as const },
+  { id: "pdc_front_left", x: 3, y: 2.5, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_front_right", x: 3, y: -2.5, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_rear", x: -4, y: 0, mountArc: "omni" as const, size: "small" as const }], "weapon_mount"),
 ];
-const C = px(_CRUISER_GRID);
+const C = gridToPixels(_CRUISER_GRID);
 
 // ---- Capital sprite (battlecruiser, battleship, dreadnought) ----
 const _CAPITAL_GRID = [
@@ -93,23 +98,28 @@ const _CAPITAL_GRID = [
   [0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0],
 ];
 const _CAPITAL_ATTACHMENTS: Attachment[] = [
-  ...atts([{ id: "engine_left", x: 9, y: 2, mountArc: "forward" as const, size: "large" as const },
-  { id: "engine_right", x: 9, y: -2, mountArc: "forward" as const, size: "large" as const }], "engine"),
-  ...atts([{ id: "mount_front", x: -9, y: 0, mountArc: "forward" as const, size: "large" as const },
+  ...buildAttachments([{ id: "engine_left", x: -8.5, y: 2, mountArc: "forward" as const, size: "large" as const },
+  { id: "engine_right", x: -8.5, y: -2, mountArc: "forward" as const, size: "large" as const }], "engine"),
+  ...buildAttachments([{ id: "mount_front", x: 9, y: 0, mountArc: "forward" as const, size: "large" as const },
   { id: "mount_left", x: -1, y: 6, mountArc: "broadside" as const, size: "large" as const },
-  { id: "mount_right", x: -1, y: -6, mountArc: "broadside" as const, size: "large" as const }], "weapon_mount"),
+  { id: "mount_right", x: 1, y: -6, mountArc: "broadside" as const, size: "large" as const },
+  { id: "pdc_front_left", x: 5, y: 3, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_front_right", x: 5, y: -3, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_mid_left", x: 0, y: 3.5, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_mid_right", x: 0, y: -3.5, mountArc: "omni" as const, size: "small" as const },
+  { id: "pdc_rear", x: -5, y: 0, mountArc: "omni" as const, size: "small" as const }], "weapon_mount"),
 ];
-const CAP = px(_CAPITAL_GRID);
+const CAP = gridToPixels(_CAPITAL_GRID);
 
 // ---- Data Definitions ----
 const PHYS: Record<string, ShipConfig> = {
-  corvette: { mass: 1.0, maxLinearSpeed: 30, maxReverseSpeed: 15, maxAngularSpeed: 7, thrustAccel: 38, reverseAccel: 24, strafeAccel: 32, turnAccel: 16, linearDrag: 1.2, angularDrag: 3.5, stopEpsilon: 0.02, inputSmoothing: 0.08 },
-  destroyer: { mass: 1.6, maxLinearSpeed: 25, maxReverseSpeed: 12, maxAngularSpeed: 5.8, thrustAccel: 28, reverseAccel: 18, strafeAccel: 22, turnAccel: 11, linearDrag: 0.7, angularDrag: 2.2, stopEpsilon: 0.02, inputSmoothing: 0.1 },
-  missile_frigate: { mass: 1.45, maxLinearSpeed: 23, maxReverseSpeed: 11, maxAngularSpeed: 5.2, thrustAccel: 26, reverseAccel: 17, strafeAccel: 20, turnAccel: 10, linearDrag: 0.6, angularDrag: 2, stopEpsilon: 0.02, inputSmoothing: 0.1 },
-  cruiser: { mass: 2.3, maxLinearSpeed: 20, maxReverseSpeed: 9, maxAngularSpeed: 4.5, thrustAccel: 22, reverseAccel: 14, strafeAccel: 16, turnAccel: 9, linearDrag: 0.45, angularDrag: 1.5, stopEpsilon: 0.02, inputSmoothing: 0.12 },
-  battlecruiser: { mass: 2.8, maxLinearSpeed: 17, maxReverseSpeed: 8, maxAngularSpeed: 3.8, thrustAccel: 19, reverseAccel: 12, strafeAccel: 13, turnAccel: 7.5, linearDrag: 0.28, angularDrag: 1.1, stopEpsilon: 0.02, inputSmoothing: 0.12 },
-  battleship: { mass: 3.4, maxLinearSpeed: 14, maxReverseSpeed: 6.5, maxAngularSpeed: 3, thrustAccel: 16, reverseAccel: 10, strafeAccel: 10, turnAccel: 6, linearDrag: 0.18, angularDrag: 0.75, stopEpsilon: 0.02, inputSmoothing: 0.15 },
-  dreadnought: { mass: 4.6, maxLinearSpeed: 11, maxReverseSpeed: 5, maxAngularSpeed: 2.2, thrustAccel: 13, reverseAccel: 8, strafeAccel: 7, turnAccel: 4.5, linearDrag: 0.12, angularDrag: 0.5, stopEpsilon: 0.02, inputSmoothing: 0.15 },
+  corvette: { mass: 1.0, maxLinearSpeed: 38, maxReverseSpeed: 20, maxAngularSpeed: 7, thrustAccel: 48, reverseAccel: 32, strafeAccel: 44, turnAccel: 16, linearDrag: 1.2, angularDrag: 3.5, stopEpsilon: 0.02, inputSmoothing: 0.08 },
+  destroyer: { mass: 1.6, maxLinearSpeed: 32, maxReverseSpeed: 16, maxAngularSpeed: 5.8, thrustAccel: 36, reverseAccel: 24, strafeAccel: 32, turnAccel: 11, linearDrag: 0.7, angularDrag: 2.2, stopEpsilon: 0.02, inputSmoothing: 0.1 },
+  missile_frigate: { mass: 1.45, maxLinearSpeed: 30, maxReverseSpeed: 15, maxAngularSpeed: 5.2, thrustAccel: 34, reverseAccel: 22, strafeAccel: 28, turnAccel: 10, linearDrag: 0.6, angularDrag: 2, stopEpsilon: 0.02, inputSmoothing: 0.1 },
+  cruiser: { mass: 2.3, maxLinearSpeed: 26, maxReverseSpeed: 12, maxAngularSpeed: 4.5, thrustAccel: 30, reverseAccel: 18, strafeAccel: 24, turnAccel: 9, linearDrag: 0.45, angularDrag: 1.5, stopEpsilon: 0.02, inputSmoothing: 0.12 },
+  battlecruiser: { mass: 2.8, maxLinearSpeed: 22, maxReverseSpeed: 10, maxAngularSpeed: 3.8, thrustAccel: 26, reverseAccel: 16, strafeAccel: 20, turnAccel: 7.5, linearDrag: 0.28, angularDrag: 1.1, stopEpsilon: 0.02, inputSmoothing: 0.12 },
+  battleship: { mass: 3.4, maxLinearSpeed: 18, maxReverseSpeed: 8, maxAngularSpeed: 3, thrustAccel: 22, reverseAccel: 14, strafeAccel: 16, turnAccel: 6, linearDrag: 0.18, angularDrag: 0.75, stopEpsilon: 0.02, inputSmoothing: 0.15 },
+  dreadnought: { mass: 4.6, maxLinearSpeed: 14, maxReverseSpeed: 6, maxAngularSpeed: 2.2, thrustAccel: 18, reverseAccel: 11, strafeAccel: 12, turnAccel: 4.5, linearDrag: 0.12, angularDrag: 0.5, stopEpsilon: 0.02, inputSmoothing: 0.15 },
 };
 
 const STATS: Record<string, ShipGameplayStats> = {
@@ -123,23 +133,23 @@ const STATS: Record<string, ShipGameplayStats> = {
 };
 
 const LOADOUTS: Record<string, Record<string, WeaponKind>> = {
-  corvette: { mount_front: "naval_cannon", mount_left: "autocannon", mount_right: "autocannon" },
-  destroyer: { mount_front: "naval_cannon", mount_left: "autocannon", mount_right: "torpedo" },
-  missile_frigate: { mount_front: "guided_missile", mount_left: "autocannon", mount_right: "emp_launcher" },
-  cruiser: { mount_front: "plasma_broadside", mount_left: "naval_cannon", mount_right: "energy_bomb" },
-  battlecruiser: { mount_front: "railgun", mount_left: "naval_cannon", mount_right: "guided_missile" },
-  battleship: { mount_front: "naval_cannon", mount_left: "railgun", mount_right: "plasma_broadside" },
-  dreadnought: { mount_front: "railgun", mount_left: "plasma_broadside", mount_right: "naval_cannon" },
+  corvette: { mount_front: "naval_cannon", mount_left: "autocannon", mount_right: "autocannon", pdc_front_left: "point_defense", pdc_front_right: "point_defense" },
+  destroyer: { mount_front: "naval_cannon", mount_left: "autocannon", mount_right: "torpedo", pdc_front_left: "point_defense", pdc_front_right: "point_defense" },
+  missile_frigate: { mount_front: "guided_missile", mount_left: "autocannon", mount_right: "emp_launcher", pdc_front_left: "point_defense", pdc_front_right: "point_defense", pdc_rear: "point_defense" },
+  cruiser: { mount_front: "plasma_broadside", mount_left: "naval_cannon", mount_right: "energy_bomb", pdc_front_left: "point_defense", pdc_front_right: "point_defense", pdc_rear: "point_defense" },
+  battlecruiser: { mount_front: "railgun", mount_left: "naval_cannon", mount_right: "guided_missile", pdc_front_left: "point_defense", pdc_front_right: "point_defense", pdc_mid_left: "point_defense", pdc_mid_right: "point_defense" },
+  battleship: { mount_front: "naval_cannon", mount_left: "railgun", mount_right: "plasma_broadside", pdc_front_left: "point_defense", pdc_front_right: "point_defense", pdc_mid_left: "point_defense", pdc_mid_right: "point_defense", pdc_rear: "point_defense" },
+  dreadnought: { mount_front: "railgun", mount_left: "plasma_broadside", mount_right: "naval_cannon", pdc_front_left: "point_defense", pdc_front_right: "point_defense", pdc_mid_left: "point_defense", pdc_mid_right: "point_defense", pdc_rear: "point_defense" },
 };
 
 const AI_DATA: Record<string, ShipAI> = {
-  corvette: { aimJitter: 0.12, leadMul: 10, aimNoise: 0.14, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  destroyer: { aimJitter: 0.12, leadMul: 10, aimNoise: 0.12, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
-  missile_frigate: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.10, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  cruiser: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.09, maxAimError: 0.40, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48 },
-  battlecruiser: { aimJitter: 0.08, leadMul: 10, aimNoise: 0.08, maxAimError: 0.45, seekSpeed: 0.8, retreatSpeed: 0.35, orbitPower: 0.72 },
-  battleship: { aimJitter: 0.06, leadMul: 16, aimNoise: 0.08, maxAimError: 0.38, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
-  dreadnought: { aimJitter: 0.06, leadMul: 16, aimNoise: 0.08, maxAimError: 0.38, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28 },
+  corvette: { lockTicks: 8, leadMul: 14, aimTolerance: 0.28, seekSpeed: 0.9, retreatSpeed: 0.4, orbitPower: 0.72, boostAggression: 0.6, evasionRange: 280 },
+  destroyer: { lockTicks: 6, leadMul: 14, aimTolerance: 0.25, seekSpeed: 0.85, retreatSpeed: 0.5, orbitPower: 0.48, boostAggression: 0.4, evasionRange: 320 },
+  missile_frigate: { lockTicks: 10, leadMul: 16, aimTolerance: 0.30, seekSpeed: 0.8, retreatSpeed: 0.4, orbitPower: 0.72, boostAggression: 0.2, evasionRange: 400 },
+  cruiser: { lockTicks: 6, leadMul: 14, aimTolerance: 0.22, seekSpeed: 0.8, retreatSpeed: 0.55, orbitPower: 0.48, boostAggression: 0.3, evasionRange: 350 },
+  battlecruiser: { lockTicks: 5, leadMul: 14, aimTolerance: 0.20, seekSpeed: 0.8, retreatSpeed: 0.4, orbitPower: 0.72, boostAggression: 0.3, evasionRange: 380 },
+  battleship: { lockTicks: 4, leadMul: 18, aimTolerance: 0.18, seekSpeed: 0.5, retreatSpeed: 0.4, orbitPower: 0.28, boostAggression: 0.1, evasionRange: 450 },
+  dreadnought: { lockTicks: 3, leadMul: 20, aimTolerance: 0.16, seekSpeed: 0.45, retreatSpeed: 0.35, orbitPower: 0.28, boostAggression: 0.0, evasionRange: 500 },
 };
 
 const EXPLOSION_DATA: Record<string, ExplosionConfig> = {
@@ -167,7 +177,7 @@ const GLOW: Record<string, string> = {
 };
 
 // ---- CONSTRUCTOR MAESTRO: HITBOX PERFECTA ----
-function build(id: string, spr: { pixels: Uint8Array; w: number; h: number }, att: Attachment[]): ShipClassDef {
+function buildShipClassDef(id: string, spr: { pixels: Uint8Array; w: number; h: number }, att: Attachment[]): ShipClassDef {
   const cx = spr.w / 2;
   const cy = spr.h / 2;
   let maxRSq = 0; // Radio máximo al cuadrado (para no hacer raíces cuadradas en el loop)
@@ -216,11 +226,11 @@ function build(id: string, spr: { pixels: Uint8Array; w: number; h: number }, at
 }
 
 export const SHIP_CLASSES: Record<string, ShipClassDef> = {
-  corvette: build("corvette", P, _PLAYER_ATTACHMENTS),
-  destroyer: build("destroyer", C, _CRUISER_ATTACHMENTS),
-  missile_frigate: build("missile_frigate", C, _CRUISER_ATTACHMENTS),
-  cruiser: build("cruiser", C, _CRUISER_ATTACHMENTS),
-  battlecruiser: build("battlecruiser", CAP, _CAPITAL_ATTACHMENTS),
-  battleship: build("battleship", CAP, _CAPITAL_ATTACHMENTS),
-  dreadnought: build("dreadnought", CAP, _CAPITAL_ATTACHMENTS),
+  corvette: buildShipClassDef("corvette", P, _PLAYER_ATTACHMENTS),
+  destroyer: buildShipClassDef("destroyer", C, _CRUISER_ATTACHMENTS),
+  missile_frigate: buildShipClassDef("missile_frigate", C, _CRUISER_ATTACHMENTS),
+  cruiser: buildShipClassDef("cruiser", C, _CRUISER_ATTACHMENTS),
+  battlecruiser: buildShipClassDef("battlecruiser", CAP, _CAPITAL_ATTACHMENTS),
+  battleship: buildShipClassDef("battleship", CAP, _CAPITAL_ATTACHMENTS),
+  dreadnought: buildShipClassDef("dreadnought", CAP, _CAPITAL_ATTACHMENTS),
 };

@@ -5,7 +5,7 @@ import { distSq, shortestAngleDelta, uuid } from "../math";
 import { SHIP_CLASSES, checkBulletHit, checkBeamHit } from "@speakerdust/shared";
 import type { CollisionGrid } from "@speakerdust/shared";
 
-function shipGrid(ship: Ship): CollisionGrid {
+function shipToCollisionGrid(ship: Ship): CollisionGrid {
   const def = SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!;
   return {
     pixels: def.pixels,
@@ -175,7 +175,7 @@ export class BulletProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
+      if (!checkBulletHit(shipToCollisionGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
 
       this._alive = false;
       hits.push({
@@ -301,7 +301,7 @@ export class MissileProjectile extends Projectile {
         if (owner?.controller === "player" && ship.team === owner.team) continue;
         if (ship.team === "spectator") continue;
       }
-      if (!checkBulletHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
+      if (!checkBulletHit(shipToCollisionGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.radius, prevX, prevY)) continue;
 
       this._alive = false;
       hits.push({
@@ -395,7 +395,7 @@ export class BeamProjectile extends Projectile {
         if (ship.team === "spectator") continue;
       }
 
-      const beamHit = checkBeamHit(shipGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.angle, this.length, this.radius);
+      const beamHit = checkBeamHit(shipToCollisionGrid(ship), ship.x, ship.y, ship.heading, this.x, this.y, this.angle, this.length, this.radius);
       if (beamHit) {
         hits.push({
           targetId: ship.id,

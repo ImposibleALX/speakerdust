@@ -9,7 +9,7 @@ export function createShipPhysics(shipClass: ShipClass): ShipPhysics {
   return new ShipPhysics(getShipPhysicsConfig(shipClass));
 }
 
-export function initShipPhysicsFromShip(physics: ShipPhysics, ship: Ship): void {
+export function initPhysicsFromShip(physics: ShipPhysics, ship: Ship): void {
   physics.reset(ship.x, ship.y, ship.heading);
   physics.velocity.x = ship.vx;
   physics.velocity.y = ship.vy;
@@ -17,7 +17,7 @@ export function initShipPhysicsFromShip(physics: ShipPhysics, ship: Ship): void 
   physics.angularVelocity = 0;
 }
 
-export function syncShipToPhysics(ship: Ship, physics: ShipPhysics): void {
+export function applyPhysicsToShip(ship: Ship, physics: ShipPhysics): void {
   const state = physics.getState();
   ship.x = state.x;
   ship.y = state.y;

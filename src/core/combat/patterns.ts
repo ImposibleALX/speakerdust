@@ -1,6 +1,7 @@
 import { shortestAngleDelta } from "../math";
 
 export type WeaponArc = "forward" | "broadside" | "omni";
+export type MountArc = WeaponArc;
 
 /**
  * Determina si el ángulo hacia un objetivo (targetAngle, en radianes mundo)

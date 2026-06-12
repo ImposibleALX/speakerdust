@@ -9,7 +9,8 @@ export type WeaponKind =
   | "torpedo"
   | "guided_missile"
   | "energy_bomb"
-  | "emp_launcher";
+  | "emp_launcher"
+  | "point_defense";
 
 export type BulletKind = WeaponKind;
 export type StatusEffect = "emp";
@@ -103,6 +104,12 @@ export const WEAPON_STATS: Record<WeaponKind, WeaponStats> = {
     chargeTicks: 0, recoil: 0, radius: 9, statusEffect: "emp", telegraphColor: "#66ccff",
     arc: "omni", fireOffsets: [0], muzzleOffset: 22,
     role: "Utility disable pulse",
+  },
+  point_defense: {
+    cooldown: 8, heat: 4, damage: 1, speed: 14, life: 25, splashRadius: 0,
+    chargeTicks: 0, recoil: 0, radius: 2, telegraphColor: "#66ffcc",
+    arc: "omni", fireOffsets: [0], muzzleOffset: 0,
+    role: "Auto-targeting point defense",
   },
 };
 

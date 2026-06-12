@@ -62,13 +62,13 @@ const EMPTY_BONUS: ShipZoneBonus = {
 
 export function initZones(): Record<string, ControlPoint> {
   return {
-    refinery: objective("refinery", WORLD_W * 0.50, WORLD_H * 0.50, 150, "ENERGY REFINERY", "energy_refinery"),
-    relay: objective("relay", WORLD_W * 0.25, WORLD_H * 0.30, 132, "COMMS RELAY", "comms_relay"),
-    platform: objective("platform", WORLD_W * 0.74, WORLD_H * 0.70, 132, "RESOURCE PLATFORM", "resource_platform"),
+    refinery: createControlPoint("refinery", WORLD_W * 0.50, WORLD_H * 0.50, 150, "ENERGY REFINERY", "energy_refinery"),
+    relay: createControlPoint("relay", WORLD_W * 0.25, WORLD_H * 0.30, 132, "COMMS RELAY", "comms_relay"),
+    platform: createControlPoint("platform", WORLD_W * 0.74, WORLD_H * 0.70, 132, "RESOURCE PLATFORM", "resource_platform"),
   };
 }
 
-function objective(id: string, x: number, y: number, radius: number, label: string, objectiveKind: ObjectiveKind): ControlPoint {
+function createControlPoint(id: string, x: number, y: number, radius: number, label: string, objectiveKind: ObjectiveKind): ControlPoint {
   return { id, x, y, radius, owner: "neutral", redProgress: 0, blueProgress: 0, enemyProgress: 0, label, objectiveKind };
 }
 
@@ -82,7 +82,7 @@ export interface ZoneChangeEvent {
   enemyProgress: number;
 }
 
-export function updateControlPoints(
+export function tickControlPoints(
   zones: Record<string, ControlPoint>,
   playerShips: Ship[],
   enemyShips: Ship[],
@@ -173,7 +173,7 @@ function resolveOwner(red: number, blue: number, enemy: number, currentOwner: Zo
   return currentOwner;
 }
 
-export function getZoneBonusForShip(ship: Ship, zones: Record<string, ControlPoint>): ShipZoneBonus {
+export function findZoneBonusForShip(ship: Ship, zones: Record<string, ControlPoint>): ShipZoneBonus {
   for (const zone of Object.values(zones)) {
     const dSq = (ship.x - zone.x) ** 2 + (ship.y - zone.y) ** 2;
     if (dSq <= zone.radius * zone.radius && zone.owner === ship.team) {

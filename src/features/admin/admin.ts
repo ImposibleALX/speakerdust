@@ -1,7 +1,6 @@
 import type { GameState } from "../../core/state";
 import type { Env } from "../../infrastructure/env";
 import type { Ship, AiState } from "../../core/ships/shipTypes";
-import { resetPlayerFull } from "../physics/playerSystem";
 import { spawnWave } from "../ai/enemySystem";
 import type { ParsedMessage } from "../../infrastructure/network/network";
 
@@ -15,7 +14,7 @@ export type AdminEffect =
   | { kind: "heal_all" }
   | { kind: "none" };
 
-export function handleAdmin(
+export function processAdminCommand(
   msg:    ParsedMessage,
   player: Ship,
   state:  GameState,
@@ -32,7 +31,7 @@ export function handleAdmin(
       if (!player.isAdmin) return { kind: "none" };
       for (const ship of Object.values(state.ships)) {
         if (ship.controller !== "player") continue;
-        resetPlayerFull(ship);
+        ship.fullReset();
       }
       return { kind: "reset_all" };
     }
@@ -42,6 +41,7 @@ export function handleAdmin(
       const targetId = msg.targetId as string | undefined;
       if (!targetId || !state.ships[targetId]) return { kind: "none" };
       delete state.ships[targetId];
+      delete state.players[targetId];
       return { kind: "kick", playerId: targetId };
     }
 

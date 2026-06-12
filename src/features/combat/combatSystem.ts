@@ -3,18 +3,34 @@ import type { WeaponKind } from "../../core/combat/weaponStats";
 import { EMP_DURATION_TICKS, WEAPON_STATS } from "../../core/combat/weaponStats";
 import { createProjectile, type Projectile } from "../../core/combat/projectiles";
 import { isAngleInArc } from "../../core/combat/patterns";
-import type { Ship, AiState } from "../../core/ships/shipTypes";
+import type { Ship, AiState, TurretMount } from "../../core/ships/shipTypes";
 import { SHIP_CLASSES } from "@speakerdust/shared";
 import { SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
-import { distSq } from "../../core/math";
-import { applyShipDamage, resolveShipCollision } from "../physics/playerSystem";
-import { applyBulletSplash, computeLeadAngle, spawnWave } from "../ai/enemySystem";
+import { distSq, shortestAngleDelta } from "../../core/math";
+
+import { dealSplashDamage, predictLeadAngle, spawnWave } from "../ai/enemySystem";
+
+const PIXEL_SCALE = 3;
+const PDC_RANGE = 200;
+const PDC_MAX_DIST_SQ = PDC_RANGE * PDC_RANGE;
+
+function mountWorldPos(ship: Ship, mount: TurretMount): { x: number; y: number } {
+  const cos = Math.cos(ship.angle);
+  const sin = Math.sin(ship.angle);
+  return {
+    x: ship.x + (cos * mount.x - sin * mount.y) * PIXEL_SCALE,
+    y: ship.y + (sin * mount.x + cos * mount.y) * PIXEL_SCALE,
+  };
+}
 
 interface PendingShot {
   ownerId: string;
   ownerController: "player" | "ai";
   weapon: WeaponKind;
   angle: number;
+  /** Visual origin for the charge telegraph */
+  originX: number;
+  originY: number;
   targetId?: string;
   fireTick: number;
 }
@@ -44,49 +60,66 @@ export class CombatSystem {
     private readonly markDirty: () => void,
   ) { }
 
-  discardPendingShotsFor(ownerId: string): void {
+  removePendingShotsFor(ownerId: string): void {
     this.pendingShots = this.pendingShots.filter(s => s.ownerId !== ownerId);
   }
 
   tryFireWeapon(ship: Ship): void {
-    if (ship.shootCooldown > 0 || ship.weaponHeat >= SHIP_HEAT_LIMIT || ship.empTicks > 0) return;
+    if (ship.empTicks > 0) return;
 
     const weapon = ship.weapon;
     const stats = WEAPON_STATS[weapon];
     if (!stats) return;
 
     const targetId = this.findTargetId(ship, weapon);
-    const state = this.getState();
-    const target = targetId ? state.ships[targetId] : undefined;
-    if (target && !isAngleInArc(ship.angle, Math.atan2(target.y - ship.y, target.x - ship.x), stats.arc)) {
+
+    let fired = false;
+    for (const mount of ship.turretMounts) {
+      if (mount.weaponKind !== weapon || !mount.enabled) continue;
+      if (mount.cooldown > 0 || mount.heat >= SHIP_HEAT_LIMIT) continue;
+
+      const pos = mountWorldPos(ship, mount);
+      const shootAngle = mount.angle;
+
+      mount.cooldown = stats.cooldown;
+      mount.heat = Math.min(SHIP_HEAT_LIMIT + 40, mount.heat + stats.heat);
+
+      if (stats.chargeTicks > 0) {
+        this.queueShot(ship.id, ship.controller, weapon, shootAngle, stats.chargeTicks, targetId, pos.x, pos.y);
+      } else {
+        this.spawnWeaponBullets(ship.id, ship.controller, pos.x, pos.y, shootAngle, weapon, targetId);
+      }
+      fired = true;
     }
 
-    ship.shootCooldown = stats.cooldown;
-    ship.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, ship.weaponHeat + stats.heat);
-
-    if (stats.chargeTicks > 0) {
-      this.queueShot(ship.id, ship.controller, weapon, ship.angle, stats.chargeTicks, targetId);
-    } else {
-      this.spawnWeaponBullets(ship.id, ship.controller, ship.x, ship.y, ship.angle, weapon, targetId);
-    }
-    this.markDirty();
+    if (fired) this.markDirty();
   }
 
   fireEnemyWeapon(enemy: Ship, target: Ship): void {
-    const weapon = enemy.weapon;
-    const stats = WEAPON_STATS[weapon];
-    if (!stats) return;
+    for (const mount of enemy.turretMounts) {
+      if (!mount.enabled || mount.weaponKind === "point_defense") continue;
+      if (mount.cooldown > 0 || mount.heat >= SHIP_HEAT_LIMIT) continue;
 
-    const lead = weapon === "railgun" ? 30 : 18;
-    const angle = computeLeadAngle(enemy.x, enemy.y, target, lead);
+      const stats = WEAPON_STATS[mount.weaponKind];
+      if (!stats) continue;
 
-    enemy.shootCooldown = stats.cooldown;
-    enemy.weaponHeat = Math.min(SHIP_HEAT_LIMIT + 40, enemy.weaponHeat + stats.heat);
+      const targetAngle = Math.atan2(target.y - enemy.y, target.x - enemy.x);
+      if (!isAngleInArc(enemy.angle, targetAngle, mount.mountArc)) continue;
 
-    if (stats.chargeTicks > 0) {
-      this.queueShot(enemy.id, "ai", weapon, angle, stats.chargeTicks, target.id);
-    } else {
-      this.spawnWeaponBullets(enemy.id, "ai", enemy.x, enemy.y, angle, weapon, target.id);
+      const lead = mount.weaponKind === "railgun" ? 30 : 18;
+      const angle = predictLeadAngle(enemy.x, enemy.y, target, lead);
+
+      mount.targetAngle = angle;
+      const pos = mountWorldPos(enemy, mount);
+
+      mount.cooldown = stats.cooldown;
+      mount.heat = Math.min(SHIP_HEAT_LIMIT + 40, mount.heat + stats.heat);
+
+      if (stats.chargeTicks > 0) {
+        this.queueShot(enemy.id, "ai", mount.weaponKind, angle, stats.chargeTicks, target.id, pos.x, pos.y);
+      } else {
+        this.spawnWeaponBullets(enemy.id, "ai", pos.x, pos.y, angle, mount.weaponKind, target.id);
+      }
     }
   }
 
@@ -98,11 +131,11 @@ export class CombatSystem {
     for (const shot of ready) {
       const owner = state.ships[shot.ownerId];
       if (!owner || !owner.alive) continue;
-      this.spawnWeaponBullets(shot.ownerId, shot.ownerController, owner.x, owner.y, shot.angle, shot.weapon, shot.targetId);
+      this.spawnWeaponBullets(shot.ownerId, shot.ownerController, shot.originX, shot.originY, shot.angle, shot.weapon, shot.targetId);
     }
   }
 
-  updateBullets(aliveShips: Ship[]): void {
+  tickProjectiles(aliveShips: Ship[]): void {
     const state = this.getState();
     const allAlive: Record<string, Ship> = {};
     for (const s of aliveShips) allAlive[s.id] = s;
@@ -122,6 +155,50 @@ export class CombatSystem {
         this.broadcast({ type: "explosion", x: explosion.x, y: explosion.y, kind: explosion.kind });
       }
     }
+
+    this.tickPDC(state, allAlive);
+  }
+
+  private tickPDC(state: GameState, allAlive: Record<string, Ship>): void {
+    const enemyProjectiles = Object.values(state.projectiles).filter(p => {
+      const owner = state.ships[p.ownerId];
+      return p.alive && owner?.controller === "ai";
+    });
+    if (enemyProjectiles.length === 0) return;
+
+    const pdcStats = WEAPON_STATS.point_defense;
+    if (!pdcStats) return;
+
+    for (const ship of Object.values(allAlive)) {
+      for (const mount of ship.turretMounts) {
+        if (mount.weaponKind !== "point_defense" || !mount.enabled) continue;
+        if (mount.cooldown > 0 || mount.heat >= SHIP_HEAT_LIMIT) continue;
+
+        let closestProj: Projectile | null = null;
+        let closestDSq = PDC_MAX_DIST_SQ;
+
+        for (const proj of enemyProjectiles) {
+          if (proj.ownerId === ship.id) continue;
+          const dSq = distSq(ship, proj);
+          if (dSq < closestDSq) {
+            closestDSq = dSq;
+            closestProj = proj;
+          }
+        }
+
+        if (!closestProj) continue;
+
+        const targetAngle = Math.atan2(closestProj.y - ship.y, closestProj.x - ship.x);
+        if (!isAngleInArc(ship.angle, targetAngle, mount.mountArc)) continue;
+
+        mount.targetAngle = targetAngle;
+        const pos = mountWorldPos(ship, mount);
+        mount.cooldown = pdcStats.cooldown;
+        mount.heat = Math.min(SHIP_HEAT_LIMIT + 40, mount.heat + pdcStats.heat);
+
+        this.spawnWeaponBullets(ship.id, ship.controller, pos.x, pos.y, targetAngle, "point_defense");
+      }
+    }
   }
 
   private processHit(hit: { targetId: string; damage: number; armorPierce: boolean; statusEffect?: string; splashRadius: number; splashDamage: number; x: number; y: number; kind: WeaponKind; ownerId: string }, projectile: Projectile, pid: string, state: GameState): void {
@@ -135,7 +212,7 @@ export class CombatSystem {
       }
     }
 
-    const result = applyShipDamage(target, hit.damage, false, hit.armorPierce);
+    const result = target.takeDamage(hit.damage, false, hit.armorPierce);
 
     const owner = state.ships[projectile.ownerId] as Ship | undefined;
 
@@ -171,7 +248,7 @@ export class CombatSystem {
   private applySplashToEnemies(hit: { splashRadius: number; splashDamage: number; x: number; y: number; ownerId: string }, state: GameState, excludedEnemyId?: string, owner?: Ship): void {
     if (hit.splashRadius <= 0) return;
     const aliveEnemies = Object.values(state.ships).filter(s => s.controller === "ai" && s.alive);
-    const kills = applyBulletSplash(hit.ownerId, hit.x, hit.y, hit.splashDamage, hit.splashRadius, aliveEnemies, excludedEnemyId);
+    const kills = dealSplashDamage(hit.ownerId, hit.x, hit.y, hit.splashDamage, hit.splashRadius, aliveEnemies, excludedEnemyId);
     for (const k of kills) {
       if (state.ships[k.enemyId]) delete state.ships[k.enemyId];
       if (owner) owner.score += k.score;
@@ -184,11 +261,11 @@ export class CombatSystem {
     if (hit.splashRadius <= 0 || !owner) return;
     for (const player of Object.values(state.ships)) {
       if (player.controller !== "player" || !player.alive) continue;
-      if (player.id === excludedPlayerId || player.team === owner.team || player.team === "spectator") continue;
+      if (player.id === excludedPlayerId || player.getTeam() === owner.getTeam() || player.getTeam() === "spectator") continue;
       if (distSq(hit, player) <= hit.splashRadius * hit.splashRadius) {
-        const result = applyShipDamage(player, hit.splashDamage, false, false);
+        const result = player.takeDamage(hit.splashDamage, false, false);
         if (result.dead) {
-          owner.score += 100;
+          if (owner && owner.getTeam() !== player.getTeam() && owner.getTeam() !== "spectator") owner.score += 100;
           this.broadcast({ type: "player_dead", playerId: player.id, x: player.x, y: player.y });
         }
       }
@@ -201,12 +278,12 @@ export class CombatSystem {
     const enemies = aliveShips.filter(s => s.controller === "ai");
     for (const enemy of enemies) {
       for (const player of players) {
-        if (player.team === "spectator") continue;
+        if (player.getTeam() === "spectator") continue;
 
-        const { aHurt, bHurt } = resolveShipCollision(player, enemy);
+        const { aHurt, bHurt } = player.handleCollision(enemy);
 
         if (aHurt) {
-          const result = applyShipDamage(player, 1, true);
+          const result = player.takeDamage(1, true);
           if (result.shieldHit) {
             this.broadcast({ type: "shield_hit", playerId: player.id, reason: "impact" });
           }
@@ -217,7 +294,7 @@ export class CombatSystem {
         }
 
         if (bHurt) {
-          const result = applyShipDamage(enemy, 1, true);
+          const result = enemy.takeDamage(1, true);
           if (result.dead) {
             enemy.alive = false;
             delete state.ships[enemy.id];
@@ -230,7 +307,7 @@ export class CombatSystem {
     }
   }
 
-  resolveWaveCompletion(alivePlayers: Ship[]): Array<{ ship: Ship; ai: AiState }> {
+  checkAndAdvanceWave(alivePlayers: Ship[]): Array<{ ship: Ship; ai: AiState }> {
     const state = this.getState();
     const remainingEnemies = Object.values(state.ships).filter(s => s.controller === "ai" && s.alive);
     if (remainingEnemies.length > 0 || alivePlayers.length === 0) return [];
@@ -250,7 +327,7 @@ export class CombatSystem {
       player.shieldRegenDelay = 0;
       player.hp = player.maxHp;
       player.boostEnergy = 100;
-      player.weaponHeat = Math.max(0, player.weaponHeat - 35);
+      for (const m of player.turretMounts) m.heat = Math.max(0, m.heat - 35);
       player.iFrames = 60;
     }
 
@@ -265,18 +342,20 @@ export class CombatSystem {
     return spawned;
   }
 
-  private queueShot(ownerId: string, ownerController: "player" | "ai", weapon: WeaponKind, angle: number, delay: number, targetId?: string): void {
+  private queueShot(ownerId: string, ownerController: "player" | "ai", weapon: WeaponKind, angle: number, delay: number, targetId?: string, originX?: number, originY?: number): void {
     const state = this.getState();
     const owner = state.ships[ownerId];
     if (!owner) return;
 
-    this.pendingShots.push({ ownerId, ownerController, weapon, angle, targetId, fireTick: state.tick + delay });
+    const ox = originX ?? owner.x;
+    const oy = originY ?? owner.y;
+    this.pendingShots.push({ ownerId, ownerController, weapon, angle, targetId, fireTick: state.tick + delay, originX: ox, originY: oy });
     this.broadcast({
       type: "weapon_charge",
       ownerId,
       weapon,
-      x: owner.x,
-      y: owner.y,
+      x: ox,
+      y: oy,
       angle,
       ticks: delay,
       color: WEAPON_STATS[weapon].telegraphColor,
@@ -294,15 +373,13 @@ export class CombatSystem {
   ): void {
     const state = this.getState();
     const stats = WEAPON_STATS[weapon];
-    const originX = x + Math.cos(angle) * stats.muzzleOffset;
-    const originY = y + Math.sin(angle) * stats.muzzleOffset;
     const currentTick = state.tick;
 
     for (const off of stats.fireOffsets) {
-      const projectile = createProjectile(ownerId, ownerController, originX, originY, angle + off, weapon, targetId, currentTick);
+      const projectile = createProjectile(ownerId, ownerController, x, y, angle + off, weapon, targetId, currentTick);
       state.projectiles[projectile.id] = projectile;
     }
-    this.broadcast({ type: "shockwave", x: originX, y: originY, weapon, ownerId });
+    this.broadcast({ type: "shockwave", x, y, weapon, ownerId });
   }
 
   private findTargetId(ship: Ship, weapon: WeaponKind): string | undefined {
@@ -317,7 +394,7 @@ export class CombatSystem {
 
     for (const [id, other] of Object.entries(state.ships)) {
       if (!other.alive || id === ship.id) continue;
-      if (other.controller === "player" && (other.team === ship.team || other.team === "spectator")) continue;
+      if (other.controller === "player" && (other.getTeam() === ship.getTeam() || other.getTeam() === "spectator")) continue;
 
       const dSq = distSq(ship, other);
       if (dSq < closestDSq) {

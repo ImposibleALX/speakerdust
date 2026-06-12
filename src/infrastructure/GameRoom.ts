@@ -7,19 +7,17 @@ import { SHIP_CLASSES } from "@speakerdust/shared";
 import { SHIP_BOOST_COST, DEFAULT_PLAYER_CLASS } from "../core/ships/shipStats";
 import { TICK_MS, SAVE_EVERY_TICKS } from "../core/world/mapConfig";
 import { clamp, uuid } from "../core/math";
+import { createPlayerWithShip } from "../features/physics/playerSystem";
 import {
-  createPlayer, respawnPlayer, updateShipPhysics, cycleWeapon,
-} from "../features/physics/playerSystem";
-import {
-  spawnWave, updateEnemyInputs, updateEnemyCombat, computeEnemyCounts,
+  spawnWave, tickEnemyAI, tickEnemyCombat, countEnemyShips,
 } from "../features/ai/enemySystem";
-import { initZones, updateControlPoints, getZoneBonusForShip, findNearestZone } from "../core/world/zones";
+import { initZones, tickControlPoints, findZoneBonusForShip, findNearestZone } from "../core/world/zones";
 import { PersistenceQueue, serializeForStorage, hydrateState, PersistedState } from "./persistence/persistence";
 import { SNAPSHOT_KEY } from "./persistence/constants";
 import { validateMessage, buildInitPayload, buildTickPayload, broadcast, checkMoveRate, checkShootRate, checkBoostRate } from "./network/network";
 import { isOriginAllowed, validateToken } from "./network/auth";
 import { checkConnectionRate } from "./network/rateLimit";
-import { handleAdmin } from "../features/admin/admin";
+import { processAdminCommand } from "../features/admin/admin";
 import { CombatSystem } from "../features/combat/combatSystem";
 
 export { GameRoom };
@@ -27,7 +25,7 @@ export type { Env };
 
 class GameRoom extends DurableObject<Env> {
   private state: GameState = {
-    ships: {}, projectiles: {}, zones: {}, wave: 1, tick: 0,
+    ships: {}, players: {}, projectiles: {}, zones: {}, wave: 1, tick: 0,
   };
 
   private readonly persistence: PersistenceQueue;
@@ -192,8 +190,9 @@ class GameRoom extends DurableObject<Env> {
     const blueCount = playerShips.filter(p => p.team === "blue").length;
     const team: Team = redCount <= blueCount ? "red" : "blue";
 
-    const player = createPlayer(playerId, team);
-    this.state.ships[playerId] = player;
+    const { player, ship } = createPlayerWithShip(playerId, team);
+    this.state.ships[playerId] = ship;
+    this.state.players[playerId] = player;
 
     this.safeSend(server, buildInitPayload(playerId, this.state));
 
@@ -241,7 +240,7 @@ class GameRoom extends DurableObject<Env> {
             ship.team = red <= blue ? "red" : "blue";
             this.safeBroadcast({ type: "player_team", playerId: ship.id, team: ship.team });
           }
-          respawnPlayer(ship);
+          ship.respawn();
           this.persistence.markDirty();
           this.safeSend(ws, { type: "respawned" });
           void this.reconcileAlarmState();
@@ -262,7 +261,7 @@ class GameRoom extends DurableObject<Env> {
       }
       case "switch_weapon": {
         if (!ship.alive) return;
-        const weapon = cycleWeapon(ship);
+        const weapon = ship.cycleToNextWeapon();
         this.safeSend(ws, { type: "weapon_changed", weapon });
         break;
       }
@@ -275,7 +274,7 @@ class GameRoom extends DurableObject<Env> {
         const cls = msg.shipClass as ShipClass;
         if (cls && SHIP_CLASSES[cls] && cls !== ship.shipClass) {
           ship.shipClass = cls;
-          respawnPlayer(ship);
+          ship.respawn();
           this.persistence.markDirty();
           this.safeSend(ws, { type: "respawned" });
           this.safeSend(ws, { type: "weapon_changed", weapon: ship.weapon });
@@ -291,9 +290,10 @@ class GameRoom extends DurableObject<Env> {
 
     if (playerId && this.state.ships[playerId]) {
       delete this.state.ships[playerId];
+      delete this.state.players[playerId];
       this.aiStates.delete(playerId);
       this.safeBroadcast({ type: "player_leave", playerId });
-      this.combat.discardPendingShotsFor(playerId);
+      this.combat.removePendingShotsFor(playerId);
       this.persistence.markDirty();
       void this.reconcileAlarmState();
     }
@@ -309,15 +309,15 @@ class GameRoom extends DurableObject<Env> {
     const aliveEnemies = allShips.filter(s => s.controller === "ai" && s.alive);
 
     // Zone Control Logic
-    const zoneEvents = updateControlPoints(st.zones, alivePlayers, aliveEnemies, st.wave);
+    const zoneEvents = tickControlPoints(st.zones, alivePlayers, aliveEnemies, st.wave);
     for (const ev of zoneEvents) {
       this.safeBroadcast({ type: "objective", ...ev });
     }
 
     // Players Physics & Zone Bonuses
     for (const player of alivePlayers) {
-      const zoneBonus = getZoneBonusForShip(player, st.zones);
-      updateShipPhysics(player, zoneBonus);
+      const zoneBonus = findZoneBonusForShip(player, st.zones);
+      player.tick(zoneBonus);
 
       if (zoneBonus.repairEveryTicks > 0 && st.tick % zoneBonus.repairEveryTicks === 0 && player.hp < player.maxHp) {
         player.hp++;
@@ -328,23 +328,23 @@ class GameRoom extends DurableObject<Env> {
     }
 
     // AI Logic & Physics
-    const enemyCounts = computeEnemyCounts(aliveEnemies);
+    const enemyCounts = countEnemyShips(aliveEnemies);
     for (const enemy of aliveEnemies) {
       const ai = this.aiStates.get(enemy.id);
       if (!ai) continue;
 
       const nearestZone = findNearestZone(enemy.x, enemy.y, st.zones);
-      updateEnemyInputs(enemy, ai, alivePlayers, enemyCounts, nearestZone);
-      updateShipPhysics(enemy, 0);
-      updateEnemyCombat(enemy, ai, alivePlayers, (e, t) => this.combat.fireEnemyWeapon(e, t));
+      tickEnemyAI(enemy, ai, alivePlayers, enemyCounts, nearestZone);
+      enemy.tick(0);
+      tickEnemyCombat(enemy, ai, alivePlayers, (e, t) => this.combat.fireEnemyWeapon(e, t));
     }
 
     // Combat Resolution
     const aliveShips = [...alivePlayers, ...aliveEnemies];
     this.combat.resolvePendingShots();
-    this.combat.updateBullets(aliveShips);
+    this.combat.tickProjectiles(aliveShips);
     this.combat.resolveCollisions(aliveShips);
-    const newShips = this.combat.resolveWaveCompletion(alivePlayers);
+    const newShips = this.combat.checkAndAdvanceWave(alivePlayers);
     for (const { ai, ship } of newShips) {
       this.aiStates.set(ship.id, ai);
     }
@@ -400,7 +400,7 @@ class GameRoom extends DurableObject<Env> {
   }
 
   private processAdminMessage(ws: WebSocket, player: Ship, msg: any): void {
-    const effect = handleAdmin(msg, player, this.state, this.env);
+    const effect = processAdminCommand(msg, player, this.state, this.env);
     switch (effect.kind) {
       case "authed":
         this.safeSend(ws, { type: "admin_authed", ok: effect.ok });

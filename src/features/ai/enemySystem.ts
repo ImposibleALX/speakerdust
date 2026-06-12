@@ -1,12 +1,13 @@
-import type { Ship, ShipClass, AiState } from "../../core/ships/shipTypes";
+import { Ship } from "../../core/ships/Ship";
+import type { ShipClass, AiState } from "../../core/ships/shipTypes";
 import type { ControlPoint } from "../../core/world/zones";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
-import { SHIP_CLASSES } from "@speakerdust/shared";
-import { SHIP_HEAT_LIMIT } from "../../core/ships/shipStats";
-import { spawnPos } from "../../core/world/mapConfig";
-import { clamp, rand, uuid, distSq, shortestAngleDelta } from "../../core/math";
-import { applyShipDamage } from "../physics/playerSystem";
+import { SHIP_CLASSES, type ShipAI } from "@speakerdust/shared";
+import { getSpawnPosition } from "../../core/world/mapConfig";
+import { clamp, uuid, distSq, shortestAngleDelta } from "../../core/math";
+
+const ENEMY_TYPES: ShipClass[] = ["corvette", "destroyer", "missile_frigate", "cruiser", "battlecruiser", "battleship", "dreadnought"];
 
 function approachAngle(current: number, desired: number, maxStep: number): number {
   const delta = shortestAngleDelta(current, desired);
@@ -14,48 +15,29 @@ function approachAngle(current: number, desired: number, maxStep: number): numbe
 }
 
 export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Ship; ai: AiState } {
-  const pos = spawnPos();
+  const pos = getSpawnPosition();
   const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
-  const stats = def.stats;
-  const phys = def.physics;
   const aiCfg = def.ai;
-  const weapon = stats.weaponSlots[0] ?? "naval_cannon";
+
+  const ship = new Ship({
+    id: uuid(),
+    controller: "ai",
+    shipClass,
+    x: pos.x,
+    y: pos.y,
+    angle: 0,
+  });
 
   return {
-    ship: {
-      id: uuid(),
-      controller: "ai",
-      shipClass,
-      role: stats.role,
-      mass: phys.mass, turnRate: phys.maxAngularSpeed,
-      drag: phys.linearDrag, maxSpeed: phys.maxLinearSpeed,
-      thrustForce: phys.thrustAccel, strafeThrustForce: phys.strafeAccel,
-      weaponSlots: [...stats.weaponSlots],
-      ...pos,
-      vx: 0, vy: 0,
-      angle: 0, targetAngle: 0,
-      hp: stats.maxHp, maxHp: stats.maxHp,
-      armor: stats.armorMax, armorMax: stats.armorMax,
-      shield: stats.shieldMax, shieldMax: stats.shieldMax,
-      shieldRegenDelay: 0,
-      weapon,
-      shootCooldown: 0, weaponHeat: 0,
-      boostEnergy: 100, boostCooldown: 0, boostQueued: false,
-      empTicks: 0, iFrames: 0, alive: true,
-      inputForward: 0, inputStrafe: 0, inputTurn: 0,
-      heading: 0, angularVelocity: 0,
-      _physics: undefined,
-      name: "", color: "", team: "red" as const,
-      score: 0, isAdmin: false, godmode: false, inputSeq: 0,
-    },
+    ship,
     ai: {
       targetId: undefined,
       lastSeenPos: undefined,
-      reactionTicks: Math.floor(rand(20, 45)),
-      aimJitter: aiCfg.aimJitter,
-      maneuverTimer: Math.floor(rand(30, 90)),
-      maneuverDir: (Math.random() < 0.5 ? -1 : 1) as -1 | 1,
-      strafing: Math.random() < 0.5,
+      reactionTicks: 0,
+      aimJitter: 0,
+      maneuverTimer: 0,
+      maneuverDir: 1,
+      strafing: false,
       frustration: 0,
       wave,
       formationIndex: 0,
@@ -65,7 +47,6 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
 
 export function spawnWave(wave: number): Array<{ ship: Ship; ai: AiState }> {
   const results: Array<{ ship: Ship; ai: AiState }> = [];
-  const classes: ShipClass[] = [];
 
   const corvettes = Math.min(2 + Math.ceil(wave * 0.5), 8);
   const destroyers = Math.min(Math.max(0, Math.floor(wave / 3)), 5);
@@ -95,7 +76,7 @@ export function assignFormationIndices(ais: AiState[]): void {
   }
 }
 
-export function computeEnemyCounts(ships: Ship[]): Record<ShipClass, number> {
+export function countEnemyShips(ships: Ship[]): Record<ShipClass, number> {
   const counts: Record<string, number> = {};
   for (const s of ships) {
     if (s.controller === "ai" && s.alive) {
@@ -105,125 +86,147 @@ export function computeEnemyCounts(ships: Ship[]): Record<ShipClass, number> {
   return counts as Record<ShipClass, number>;
 }
 
-export function computeLeadAngle(x: number, y: number, target: Ship, lead: number): number {
+export function predictLeadAngle(x: number, y: number, target: Ship, lead: number): number {
   const leadX = target.x + target.vx * lead;
   const leadY = target.y + target.vy * lead;
   return Math.atan2(leadY - y, leadX - x);
 }
 
-export function updateEnemyInputs(
+/** Pick the best target: lowest HP within range, then nearest */
+function pickTarget(enemy: Ship, alivePlayers: Ship[], aiCfg: ShipAI): Ship | null {
+  let best: Ship | null = null;
+  let bestScore = -Infinity;
+
+  for (const p of alivePlayers) {
+    const dSq = distSq(enemy, p);
+    const dist = Math.sqrt(dSq);
+    const hpPct = p.hp / Math.max(1, p.maxHp);
+
+    let score = 0;
+    score -= dist * 0.3;
+    score -= hpPct * 100;
+    if (p.empTicks > 0) score += 30;
+    if (dist < aiCfg.evasionRange) score += 20;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  }
+  return best;
+}
+
+/** Select the best weapon for current distance */
+function selectBestWeapon(enemy: Ship, dist: number): void {
+  const slots = enemy.weaponSlots;
+  if (slots.length <= 1) return;
+
+  let bestWeapon = slots[0]!;
+  let bestScore = -Infinity;
+
+  for (const w of slots) {
+    const stats = WEAPON_STATS[w];
+    if (!stats) continue;
+
+    const maxRange = stats.speed * stats.life;
+    const rangeScore = -Math.abs(dist - maxRange * 0.5);
+    const dmgScore = stats.damage * 3 - stats.heat;
+    const score = rangeScore + dmgScore;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestWeapon = w;
+    }
+  }
+
+  if (bestWeapon !== enemy.weapon) {
+    enemy.weapon = bestWeapon;
+  }
+}
+
+export function tickEnemyAI(
   enemy: Ship,
   ai: AiState,
   alivePlayers: Ship[],
   enemyCounts: Record<ShipClass, number>,
   nearestZone: Pick<ControlPoint, "x" | "y" | "radius"> | null,
 ): void {
-  if (enemy.boostCooldown > 0) enemy.boostCooldown--;
-  if (enemy.boostEnergy < 100) enemy.boostEnergy = Math.min(100, enemy.boostEnergy + (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.boostRegenRate);
+  enemy.boostCooldown--;
+  if (enemy.boostCooldown < 0) enemy.boostCooldown = 0;
+  enemy.boostEnergy = Math.min(100, enemy.boostEnergy + (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.boostRegenRate);
 
-  const stats = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats;
+  const def = SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!;
+  const stats = def.stats;
+  const aiCfg = def.ai;
 
+  // --- Target selection ---
   let target: Ship | null = null;
+  let targetDist = Infinity;
   let targetDistSq = Infinity;
 
-  const currentTarget = alivePlayers.find(p => p.id === ai.targetId && p.alive);
-  if (currentTarget) {
-    const dSq = distSq(enemy, currentTarget);
-    target = currentTarget;
-    targetDistSq = dSq;
-    ai.lastSeenPos = { x: currentTarget.x, y: currentTarget.y };
+  if (ai.targetId) {
+    const cached = alivePlayers.find(p => p.id === ai.targetId && p.alive);
+    if (cached) {
+      target = cached;
+      targetDistSq = distSq(enemy, cached);
+      targetDist = Math.sqrt(targetDistSq);
+      ai.lastSeenPos = { x: cached.x, y: cached.y };
+    }
   }
 
   if (!target) {
-    for (const p of alivePlayers) {
-      const dSq = distSq(enemy, p);
-      if (dSq < targetDistSq) {
-        targetDistSq = dSq;
-        target = p;
-      }
-    }
+    target = pickTarget(enemy, alivePlayers, aiCfg);
     if (target) {
       ai.targetId = target.id;
       ai.lastSeenPos = { x: target.x, y: target.y };
-      ai.reactionTicks = Math.floor(rand(15, 30));
+      ai.reactionTicks = aiCfg.lockTicks;
       ai.frustration = 0;
     } else {
       ai.targetId = undefined;
     }
   }
 
-  let aimTargetX = 600;
-  let aimTargetY = 400;
-  if (target) {
-    aimTargetX = target.x;
-    aimTargetY = target.y;
-  } else if (ai.lastSeenPos) {
-    aimTargetX = ai.lastSeenPos.x;
-    aimTargetY = ai.lastSeenPos.y;
-  } else if (nearestZone) {
-    aimTargetX = nearestZone.x;
-    aimTargetY = nearestZone.y;
-  }
-
-  const aiCfg = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).ai;
+  // --- Aim logic (deterministic lead prediction) ---
   let desiredAngle = enemy.angle;
+
   if (target) {
-    const dx = target.x - enemy.x;
-    const dy = target.y - enemy.y;
-    const dist = Math.hypot(dx, dy) || 1;
-
-    const leadMul = aiCfg.leadMul;
-    const aimNoise = aiCfg.aimNoise;
-
-    const predictX = target.x + target.vx * leadMul;
-    const predictY = target.y + target.vy * leadMul;
-    const noisyX = predictX + (Math.random() - 0.5) * 60;
-    const noisyY = predictY + (Math.random() - 0.5) * 60;
-
-    const rawAngle = Math.atan2(noisyY - enemy.y, noisyX - enemy.x);
+    targetDistSq = distSq(enemy, target);
+    targetDist = Math.sqrt(targetDistSq);
 
     if (ai.reactionTicks > 0) {
       ai.reactionTicks--;
-      desiredAngle = approachAngle(enemy.angle, rawAngle, enemy.turnRate * 0.45);
-    } else {
-      desiredAngle = rawAngle + (Math.random() - 0.5) * aimNoise;
     }
 
-    if (dist > 1400) {
-      ai.frustration = Math.max(0, ai.frustration - 0.15);
+    const leadTicks = aiCfg.leadMul;
+    const rawAngle = predictLeadAngle(enemy.x, enemy.y, target, leadTicks);
+    desiredAngle = rawAngle;
+
+    // --- Weapon selection ---
+    selectBestWeapon(enemy, targetDist);
+
+    // --- Range management ---
+    const margin = 60;
+    const seek = targetDist > stats.idealRange + margin;
+    const retreat = targetDist < stats.idealRange - margin;
+
+    // --- Boost logic ---
+    const wantBoost = seek && enemy.boostCooldown <= 0 && enemy.boostEnergy >= 10 && aiCfg.boostAggression > 0;
+    if (wantBoost && (alivePlayers.length <= 3 || targetDist > stats.idealRange * 2)) {
+      enemy.boostQueued = true;
     }
-  } else {
-    const dx = aimTargetX - enemy.x;
-    const dy = aimTargetY - enemy.y;
-    desiredAngle = Math.atan2(dy, dx);
-  }
 
-  enemy.targetAngle = approachAngle(enemy.angle, desiredAngle, enemy.turnRate);
+    // --- Evasion: when in threat range, strafe perpendicular ---
+    const inDanger = targetDist < aiCfg.evasionRange;
+    const evadeDir = (ai.formationIndex % 2 === 0 ? 1 : -1) * (enemy.id.charCodeAt(0) % 2 === 0 ? 1 : -1);
 
-  ai.maneuverTimer--;
-  if (ai.maneuverTimer <= 0) {
-    ai.maneuverDir = (Math.random() < 0.5 ? -1 : 1) as -1 | 1;
-    ai.strafing = Math.random() < 0.55;
-    ai.maneuverTimer = Math.floor(rand(40, 95));
-
-    if (ai.frustration > 60 && target) {
-      ai.targetId = undefined;
-      ai.frustration = 0;
-    }
-  }
-
-  let moveX = 0;
-  let moveY = 0;
-
-  if (target) {
+    // --- Movement: combine seek/retreat + orbit + evasion ---
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    const dirX = dx / dist;
-    const dirY = dy / dist;
+    const dirX = dx / targetDist;
+    const dirY = dy / targetDist;
 
-    const seek = dist > stats.idealRange + 90;
-    const retreat = dist < stats.idealRange - 110;
+    let moveX = 0;
+    let moveY = 0;
 
     if (seek) {
       moveX += dirX * aiCfg.seekSpeed;
@@ -234,47 +237,55 @@ export function updateEnemyInputs(
       moveY -= dirY * aiCfg.retreatSpeed;
     }
 
-    const orbitPhase = ai.wave * 0.35 + ai.formationIndex * 0.7 + ai.maneuverTimer * 0.06;
+    // Orbit around target (deterministic based on ship id and wave)
+    const orbitPhase = ai.wave * 0.31 + ai.formationIndex * 0.73;
     const orbitSide = Math.sin(orbitPhase) >= 0 ? 1 : -1;
-    const orbitAngle = enemy.targetAngle + (Math.PI / 2) * ai.maneuverDir * orbitSide;
+    const orbitAngle = desiredAngle + (Math.PI / 2) * orbitSide;
     moveX += Math.cos(orbitAngle) * aiCfg.orbitPower;
     moveY += Math.sin(orbitAngle) * aiCfg.orbitPower;
 
-    if (ai.strafing) {
-      const strafeSide = Math.sin(orbitPhase * 1.7) >= 0 ? 1 : -1;
-      const strafeAngle = enemy.targetAngle + (Math.PI / 2) * strafeSide;
-      moveX += Math.cos(strafeAngle) * 0.22;
-      moveY += Math.sin(strafeAngle) * 0.22;
+    // Evasion: when in danger, add perpendicular movement
+    if (inDanger) {
+      const evadeAngle = desiredAngle + (Math.PI / 2) * evadeDir;
+      moveX += Math.cos(evadeAngle) * 0.35;
+      moveY += Math.sin(evadeAngle) * 0.35;
     }
 
-    if (enemy.hp < enemy.maxHp * 0.3) {
-      moveX -= dirX * 0.55;
-      moveY -= dirY * 0.55;
+    // Retreat when critically damaged
+    if (enemy.hp < enemy.maxHp * 0.25) {
+      moveX -= dirX * 0.6;
+      moveY -= dirY * 0.6;
     }
+
+    const cos = Math.cos(enemy.angle);
+    const sin = Math.sin(enemy.angle);
+    enemy.inputForward = clamp(moveX * cos + moveY * sin, -1, 1);
+    enemy.inputStrafe = clamp(moveX * -sin + moveY * cos, -1, 1);
+
   } else {
-    const dx = aimTargetX - enemy.x;
-    const dy = aimTargetY - enemy.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    moveX = dx / dist;
-    moveY = dy / dist;
-
-    const zigPhase = ai.wave * 0.25 + ai.formationIndex * 0.5 + ai.maneuverTimer * 0.08;
-    const zig = Math.sin(zigPhase) * 0.22;
-    moveX += zig;
-    moveY += zig * 0.8;
+    // No target: move toward last known position or zone center
+    if (ai.lastSeenPos) {
+      const dx = ai.lastSeenPos.x - enemy.x;
+      const dy = ai.lastSeenPos.y - enemy.y;
+      desiredAngle = Math.atan2(dy, dx);
+      enemy.inputForward = 0.6;
+      enemy.inputStrafe = 0;
+    } else if (nearestZone) {
+      const dx = nearestZone.x - enemy.x;
+      const dy = nearestZone.y - enemy.y;
+      desiredAngle = Math.atan2(dy, dx);
+      enemy.inputForward = 0.4;
+      enemy.inputStrafe = 0;
+    } else {
+      enemy.inputForward = 0;
+      enemy.inputStrafe = 0;
+    }
   }
 
-  const cos = Math.cos(enemy.angle);
-  const sin = Math.sin(enemy.angle);
-  enemy.inputForward = clamp(moveX * cos + moveY * sin, -1, 1);
-  enemy.inputStrafe = clamp(moveX * -sin + moveY * cos, -1, 1);
-
-  if (!target) {
-    ai.frustration = Math.max(0, ai.frustration - 0.4);
-  }
+  enemy.targetAngle = approachAngle(enemy.angle, desiredAngle, enemy.turnRate);
 }
 
-export function updateEnemyCombat(
+export function tickEnemyCombat(
   enemy: Ship,
   ai: AiState,
   alivePlayers: Ship[],
@@ -306,32 +317,7 @@ export function updateEnemyCombat(
 
   if (!closestPlayer) return;
 
-  const angToTarget = Math.atan2(closestPlayer.y - enemy.y, closestPlayer.x - enemy.x);
-  const aimError = shortestAngleDelta(enemy.angle, angToTarget);
-
-  if (shouldEnemyFire(enemy, ai, closestDSq, aimError)) {
-    fireEnemyWeapon(enemy, closestPlayer);
-  }
-}
-
-export function shouldEnemyFire(
-  enemy: Ship,
-  ai: AiState,
-  targetDistSq: number,
-  aimErrorRad: number = 0,
-): boolean {
-  if (enemy.shootCooldown > 0 || enemy.weaponHeat >= SHIP_HEAT_LIMIT) return false;
-
-  const def = SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!;
-  const rangeSq = (def.stats.idealRange + 180) ** 2;
-  if (targetDistSq > rangeSq) {
-    ai.frustration += 0.2;
-    return false;
-  }
-
-  const maxAimError = def.ai.maxAimError;
-
-  return Math.abs(aimErrorRad) <= maxAimError;
+  fireEnemyWeapon(enemy, closestPlayer);
 }
 
 export interface SplashKill {
@@ -342,7 +328,7 @@ export interface SplashKill {
   score: number;
 }
 
-export function applyBulletSplash(
+export function dealSplashDamage(
   ownerId: string,
   x: number,
   y: number,
@@ -366,7 +352,7 @@ export function applyBulletSplash(
     const falloff = 1 - distance / splashRadius;
     const finalDamage = Math.max(1, Math.round(splashDmg * falloff));
 
-    const result = applyShipDamage(enemy, finalDamage, false, false);
+    const result = enemy.takeDamage(finalDamage, false, false);
 
     if (result.dead) {
       const score = (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.score;

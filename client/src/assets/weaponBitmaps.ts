@@ -13,4 +13,11 @@ export const WEAPON_BITMAPS: Record<string, number[][]> = {
     [1,3,1],
     [0,2,0],
   ],
+  point_defense: [
+    [0,0,2,0,0],
+    [0,2,1,2,0],
+    [2,1,5,1,2],
+    [0,2,1,2,0],
+    [0,0,2,0,0],
+  ],
 };

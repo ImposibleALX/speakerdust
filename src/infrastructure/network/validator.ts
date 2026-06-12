@@ -6,6 +6,7 @@ const VALID_MESSAGE_TYPES = new Set([
 
 const VALID_ADMIN_COMMANDS = new Set([
   "admin_auth", "admin_reset_all", "admin_kick", "admin_set_wave", "admin_clear_enemies",
+  "admin_godmode", "admin_heal_all", "admin_reset_data",
 ]);
 
 export interface ParsedMessage {

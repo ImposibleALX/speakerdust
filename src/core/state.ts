@@ -1,9 +1,11 @@
 import type { Projectile } from "./combat/projectiles";
 import type { ControlPoint, ObjectiveKind, ZoneOwner } from "./world/zones";
 import type { Controller, Ship, ShipClass, Team } from "./ships/shipTypes";
+import type { Player } from "./players/Player";
 
 export interface GameState {
   ships: Record<string, Ship>;
+  players: Record<string, Player>;
   projectiles: Record<string, Projectile>;
   zones: Record<string, ControlPoint>;
   wave: number;
@@ -61,7 +63,7 @@ export interface PublicZone {
   enemyProgress: number;
 }
 
-export function toPublicShip(s: Ship): PublicShip {
+export function toPublicShip(s: Ship, p?: Player): PublicShip {
   const pub: PublicShip = {
     id: s.id,
     controller: s.controller,
@@ -90,15 +92,15 @@ export function toPublicShip(s: Ship): PublicShip {
     thrustForce: s.thrustForce,
     strafeThrustForce: s.strafeThrustForce,
     boostEnergy: Math.round(s.boostEnergy),
-    weaponHeat: Math.round(s.weaponHeat),
+    weaponHeat: Math.round(Math.max(...s.turretMounts.map(m => m.heat), 0)),
     empTicks: s.empTicks,
   };
-  pub.name = s.name;
-  pub.color = s.color;
-  pub.team = s.team;
-  pub.score = s.score;
-  pub.isAdmin = s.isAdmin;
-  pub.inputSeq = s.inputSeq;
+  pub.name = p?.name;
+  pub.color = p?.color;
+  pub.team = p?.team ?? s.team;
+  pub.score = p?.score;
+  pub.isAdmin = p?.isAdmin;
+  pub.inputSeq = p?.inputSeq;
   return pub;
 }
 
