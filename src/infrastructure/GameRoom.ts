@@ -4,17 +4,15 @@ import type { GameState } from "../core/state";
 import type { Ship, Team, AiState, ShipClass } from "../core/ships/shipTypes";
 import type { WeaponKind } from "../core/combat/weaponStats";
 import { SHIP_CLASSES } from "@speakerdust/shared";
-import { SHIP_BOOST_COST, DEFAULT_PLAYER_CLASS } from "../core/ships/shipStats";
+import { SHIP_BOOST_COST } from "../core/ships/shipStats";
 import { TICK_MS, SAVE_EVERY_TICKS } from "../core/world/mapConfig";
 import { clamp, uuid } from "../core/math";
 import { createPlayerWithShip } from "../features/physics/playerSystem";
-import {
-  spawnWave, tickEnemyAI, tickEnemyCombat, countEnemyShips,
-} from "../features/ai/enemySystem";
-import { initZones, tickControlPoints, findZoneBonusForShip, findNearestZone } from "../core/world/zones";
+import { spawnWave, tickEnemyAI } from "../features/ai/enemySystem";
+import { initZones, tickControlPoints, findZoneBonusForShip } from "../core/world/zones";
 import { PersistenceQueue, serializeForStorage, hydrateState, PersistedState } from "./persistence/persistence";
 import { SNAPSHOT_KEY } from "./persistence/constants";
-import { validateMessage, buildInitPayload, buildTickPayload, broadcast, checkMoveRate, checkShootRate, checkBoostRate } from "./network/network";
+import { validateMessage, buildInitPayload, buildTickPayload, checkMoveRate, checkShootRate, checkBoostRate, rateLimits } from "./network/network";
 import { isOriginAllowed, validateToken } from "./network/auth";
 import { checkConnectionRate } from "./network/rateLimit";
 import { processAdminCommand } from "../features/admin/admin";
@@ -31,6 +29,15 @@ class GameRoom extends DurableObject<Env> {
   private readonly persistence: PersistenceQueue;
   private readonly combat: CombatSystem;
   private readonly aiStates = new Map<string, AiState>();
+
+  // Arreglos cacheados (Cero Garbage Collection por frame)
+  private alivePlayers: Ship[] = [];
+  private aliveEnemies: Ship[] = [];
+  private aliveShips: Ship[] = [];
+  private enemyCountsCache: Record<string, number> = {};
+
+  // Loop de alta velocidad en memoria (En vez de disco/Alarms)
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -56,8 +63,8 @@ class GameRoom extends DurableObject<Env> {
         this.state = hydrated;
         this.aiStates.clear();
         if (stored.aiStates) {
-          for (const [k, v] of Object.entries(stored.aiStates)) {
-            this.aiStates.set(k, v as AiState);
+          for (const k in stored.aiStates) {
+            this.aiStates.set(k, stored.aiStates[k] as AiState);
           }
         }
       } else {
@@ -70,21 +77,27 @@ class GameRoom extends DurableObject<Env> {
 
       this.persistence.setHydrated();
       this.persistence.markDirty();
-      await this.reconcileAlarmState();
     });
   }
 
-  // ── Network Helpers ────────────────────────────────────────────────────────
+  // ── Network & Performance Helpers ──────────────────────────────────────────
   private safeSend(ws: WebSocket, payload: unknown): void {
     try {
-      if (ws.readyState === 1 /* WebSocket.OPEN */) {
-        ws.send(JSON.stringify(payload));
-      }
-    } catch { /* socket cerrado */ }
+      if (ws.readyState === 1) ws.send(JSON.stringify(payload));
+    } catch { /* ignorar conexiones muertas */ }
   }
 
+  // OPTIMIZACIÓN: Stringify 1 sola vez en lugar de N veces para todos los jugadores
   private safeBroadcast(payload: object): void {
-    broadcast(this.ctx.getWebSockets(), payload);
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length === 0) return;
+
+    const str = JSON.stringify(payload);
+    for (let i = 0; i < sockets.length; i++) {
+      try {
+        if (sockets[i]!.readyState === 1) sockets[i]!.send(str);
+      } catch { /* ignore */ }
+    }
   }
 
   private getClientIP(request: Request): string {
@@ -93,61 +106,43 @@ class GameRoom extends DurableObject<Env> {
       ?? "unknown";
   }
 
-  private hasActiveGame(): boolean {
-    return Object.values(this.state.ships).some(s => s.alive);
+  // Cache updater para evitar crear objetos en el GC
+  private updateEnemyCounts(): Record<string, number> {
+    for (const k in this.enemyCountsCache) this.enemyCountsCache[k] = 0;
+    for (let i = 0; i < this.aliveEnemies.length; i++) {
+      const cls = this.aliveEnemies[i]!.shipClass;
+      this.enemyCountsCache[cls] = (this.enemyCountsCache[cls] || 0) + 1;
+    }
+    return this.enemyCountsCache;
   }
 
-  private async reconcileAlarmState(): Promise<void> {
-    try {
-      const active = this.hasActiveGame();
-      const currentAlarm = await this.ctx.storage.getAlarm();
-
-      if (!active) {
-        if (currentAlarm !== null) {
-          await this.ctx.storage.deleteAlarm();
-        }
-        return;
-      }
-
-      const now = Date.now();
-      const staleThresholdMs = Math.max(120_000, TICK_MS * 20);
-
-      if (currentAlarm === null || currentAlarm < now - staleThresholdMs) {
-        await this.ctx.storage.deleteAlarm();
-        await this.ctx.storage.setAlarm(now + TICK_MS);
-      }
-    } catch (err) {
-      console.error("reconcileAlarmState failed:", err);
+  // ── High Performance Game Loop ──────────────────────────────────────────────
+  private ensureGameLoop(): void {
+    if (this.tickTimer === null && this.ctx.getWebSockets().length > 0) {
+      this.tickTimer = setInterval(() => {
+        try { this.gameTick(); } catch (err) { console.error("GameTick Crash:", err); }
+      }, TICK_MS);
     }
   }
 
-  private async ensureNextTickAlarm(): Promise<void> {
-    try {
-      if (!this.hasActiveGame()) {
-        await this.ctx.storage.deleteAlarm();
-        return;
-      }
-      await this.ctx.storage.deleteAlarm();
-      await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
-    } catch (err) {
-      console.error("ensureNextTickAlarm failed:", err);
+  private stopGameLoop(): void {
+    if (this.tickTimer !== null) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+      // Liberar memoria cuando no hay humanos
+      this.alivePlayers.length = 0;
+      this.aliveEnemies.length = 0;
+      this.aliveShips.length = 0;
+      // Guardar el estado al vaciarse la sala (Hibernación segura)
+      this.ctx.waitUntil(this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state, this.aiStates)));
     }
   }
 
-  // ── Alarm-based Game Loop ─────────────────────────────────────────────────
+  // Backup system: por si el DO se reinicia por mantenimiento de Cloudflare
   async alarm(): Promise<void> {
-    await this.ctx.storage.sync();
-
-    const alive = Object.values(this.state.ships).filter(s => s.alive);
-    if (alive.length === 0) {
-      try { await this.ctx.storage.deleteAlarm(); } catch { /* ignore */ }
-      await this.ctx.storage.put(SNAPSHOT_KEY, serializeForStorage(this.state, this.aiStates));
-      return;
+    if (this.ctx.getWebSockets().length === 0) {
+      this.stopGameLoop();
     }
-
-    try { this.gameTick(); } catch (err) { console.error("gameTick error:", err); }
-
-    await this.ensureNextTickAlarm();
   }
 
   // ── Lifecycle & Connections ───────────────────────────────────────────────
@@ -161,18 +156,13 @@ class GameRoom extends DurableObject<Env> {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
     if (request.headers.get("Upgrade") !== "websocket") {
-      return new Response("Speakerdust - connect via WebSocket", {
-        status: 200, headers: { "Content-Type": "text/plain", ...corsHeaders },
-      });
+      return new Response("Speakerdust Node", { status: 200, headers: { "Content-Type": "text/plain", ...corsHeaders } });
     }
 
     const url = new URL(request.url);
+    if (!isOriginAllowed(origin, this.env.ALLOWED_ORIGINS)) return new Response("Origin not allowed", { status: 403 });
+
     const token = url.searchParams.get("token") ?? "";
-
-    if (!isOriginAllowed(origin, this.env.ALLOWED_ORIGINS)) {
-      return new Response("Origin not allowed", { status: 403 });
-    }
-
     const { valid } = validateToken(token, this.env.AUTH_SECRET);
     if (!valid) return new Response("Invalid auth token", { status: 401 });
 
@@ -185,9 +175,14 @@ class GameRoom extends DurableObject<Env> {
     const playerId = uuid();
     server.serializeAttachment({ playerId });
 
-    const playerShips = Object.values(this.state.ships).filter(s => s.controller === "player");
-    const redCount = playerShips.filter(p => p.team === "red").length;
-    const blueCount = playerShips.filter(p => p.team === "blue").length;
+    let redCount = 0, blueCount = 0;
+    for (const id in this.state.ships) {
+      const s = this.state.ships[id];
+      if (s && s.controller === "player") {
+        if (s.team === "red") redCount++;
+        else if (s.team === "blue") blueCount++;
+      }
+    }
     const team: Team = redCount <= blueCount ? "red" : "blue";
 
     const { player, ship } = createPlayerWithShip(playerId, team);
@@ -195,19 +190,16 @@ class GameRoom extends DurableObject<Env> {
     this.state.players[playerId] = player;
 
     this.safeSend(server, buildInitPayload(playerId, this.state));
+    this.safeBroadcast({ type: "player_join", player: { id: player.id, name: player.name, color: player.color, team: player.team } });
 
-    this.safeBroadcast({
-      type: "player_join",
-      player: { id: player.id, name: player.name, color: player.color, team: player.team },
-    });
-
-    await this.ensureNextTickAlarm();
+    // Iniciar loop apenas conecte alguien
+    this.ensureGameLoop();
     this.persistence.markDirty();
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string): void {
+  async webSocketMessage(ws: WebSocket, raw: ArrayBuffer | string): Promise<void> {
     const attachment = ws.deserializeAttachment() as { playerId: string } | null;
     if (!attachment) return;
 
@@ -218,7 +210,7 @@ class GameRoom extends DurableObject<Env> {
     if (!msg) return;
 
     if (msg.type.startsWith("admin_")) {
-      this.processAdminMessage(ws, ship, msg);
+      await this.processAdminMessage(ws, ship, msg);
       return;
     }
 
@@ -234,24 +226,32 @@ class GameRoom extends DurableObject<Env> {
       case "respawn": {
         if (!ship.alive || ship.team === "spectator") {
           if (ship.team === "spectator") {
-            const ships = Object.values(this.state.ships).filter(s => s.controller === "player");
-            const red = ships.filter(p => p.team === "red").length;
-            const blue = ships.filter(p => p.team === "blue").length;
+            let red = 0, blue = 0;
+            for (const id in this.state.ships) {
+              const s = this.state.ships[id];
+              if (s && s.controller === "player") {
+                if (s.team === "red") red++; else if (s.team === "blue") blue++;
+              }
+            }
             ship.team = red <= blue ? "red" : "blue";
             this.safeBroadcast({ type: "player_team", playerId: ship.id, team: ship.team });
           }
+          // BUGFIX: Clear pending shots before respawn to avoid ghost bullets
+          this.combat.removePendingShotsFor(ship.id);
           ship.respawn();
           this.persistence.markDirty();
+          // BUGFIX: Reset shoot rate limiter so player can fire immediately after respawn
+          const limit = rateLimits?.get(ws);
+          if (limit) limit.lastShootMs = 0;
           this.safeSend(ws, { type: "respawned" });
-          void this.reconcileAlarmState();
+          // BUGFIX: Send weapon_changed so client resets lastShot cooldown and weapon display
+          this.safeSend(ws, { type: "weapon_changed", weapon: ship.weapon });
         }
         break;
       }
       case "boost": {
         if (!ship.alive || !checkBoostRate(ws)) return;
-        if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) {
-          ship.boostQueued = true;
-        }
+        if (ship.boostCooldown <= 0 && ship.boostEnergy >= SHIP_BOOST_COST) ship.boostQueued = true;
         break;
       }
       case "move": {
@@ -263,6 +263,8 @@ class GameRoom extends DurableObject<Env> {
         if (!ship.alive) return;
         const weapon = ship.cycleToNextWeapon();
         this.safeSend(ws, { type: "weapon_changed", weapon });
+        const limit = rateLimits?.get(ws);
+        if (limit) limit.lastShootMs = 0;
         break;
       }
       case "shoot": {
@@ -278,13 +280,15 @@ class GameRoom extends DurableObject<Env> {
           this.persistence.markDirty();
           this.safeSend(ws, { type: "respawned" });
           this.safeSend(ws, { type: "weapon_changed", weapon: ship.weapon });
+          const limit = rateLimits?.get(ws);
+          if (limit) limit.lastShootMs = 0;
         }
         break;
       }
     }
   }
 
-  webSocketClose(ws: WebSocket): void {
+  async webSocketClose(ws: WebSocket): Promise<void> {
     const attachment = ws.deserializeAttachment() as { playerId?: string } | null;
     const playerId = attachment?.playerId;
 
@@ -295,7 +299,10 @@ class GameRoom extends DurableObject<Env> {
       this.safeBroadcast({ type: "player_leave", playerId });
       this.combat.removePendingShotsFor(playerId);
       this.persistence.markDirty();
-      void this.reconcileAlarmState();
+    }
+
+    if (this.ctx.getWebSockets().length === 0) {
+      this.stopGameLoop();
     }
   }
 
@@ -304,49 +311,55 @@ class GameRoom extends DurableObject<Env> {
     const st = this.state;
     st.tick++;
 
-    const allShips = Object.values(st.ships);
-    const alivePlayers = allShips.filter(s => s.controller === "player" && s.alive);
-    const aliveEnemies = allShips.filter(s => s.controller === "ai" && s.alive);
+    this.alivePlayers.length = 0;
+    this.aliveEnemies.length = 0;
+    this.aliveShips.length = 0;
 
-    // Zone Control Logic
-    const zoneEvents = tickControlPoints(st.zones, alivePlayers, aliveEnemies, st.wave);
-    for (const ev of zoneEvents) {
-      this.safeBroadcast({ type: "objective", ...ev });
+    const ships = st.ships;
+    for (const id in ships) {
+      const s = ships[id];
+      if (!s || !s.alive) continue;
+
+      this.aliveShips.push(s);
+      if (s.controller === "player") this.alivePlayers.push(s);
+      else if (s.controller === "ai") this.aliveEnemies.push(s);
     }
 
-    // Players Physics & Zone Bonuses
-    for (const player of alivePlayers) {
+    const zoneEvents = tickControlPoints(st.zones, this.alivePlayers, this.aliveEnemies, st.wave);
+    for (let i = 0; i < zoneEvents.length; i++) {
+      this.safeBroadcast({ type: "objective", ...zoneEvents[i] });
+    }
+
+    // Players
+    for (let i = 0; i < this.alivePlayers.length; i++) {
+      const player = this.alivePlayers[i]!;
       const zoneBonus = findZoneBonusForShip(player, st.zones);
       player.tick(zoneBonus);
 
-      if (zoneBonus.repairEveryTicks > 0 && st.tick % zoneBonus.repairEveryTicks === 0 && player.hp < player.maxHp) {
-        player.hp++;
-      }
-      if (zoneBonus.scoreEveryTicks > 0 && st.tick % zoneBonus.scoreEveryTicks === 0) {
-        player.score += 1;
-      }
+      if (zoneBonus.repairEveryTicks > 0 && st.tick % zoneBonus.repairEveryTicks === 0 && player.hp < player.maxHp) player.hp++;
+      if (zoneBonus.scoreEveryTicks > 0 && st.tick % zoneBonus.scoreEveryTicks === 0) player.score++;
     }
 
-    // AI Logic & Physics
-    const enemyCounts = countEnemyShips(aliveEnemies);
-    for (const enemy of aliveEnemies) {
+    // AI
+    const enemyCounts = this.updateEnemyCounts() as Record<ShipClass, number>;
+    for (let i = 0; i < this.aliveEnemies.length; i++) {
+      const enemy = this.aliveEnemies[i]!;
       const ai = this.aiStates.get(enemy.id);
       if (!ai) continue;
 
-      const nearestZone = findNearestZone(enemy.x, enemy.y, st.zones);
-      tickEnemyAI(enemy, ai, alivePlayers, enemyCounts, nearestZone);
+      const target = tickEnemyAI(enemy, ai, this.alivePlayers, this.aliveEnemies, enemyCounts, st.zones);
       enemy.tick(0);
-      tickEnemyCombat(enemy, ai, alivePlayers, (e, t) => this.combat.fireEnemyWeapon(e, t));
+      if (target) this.combat.fireEnemyWeapon(enemy, target);
     }
 
-    // Combat Resolution
-    const aliveShips = [...alivePlayers, ...aliveEnemies];
+    // Physics
     this.combat.resolvePendingShots();
-    this.combat.tickProjectiles(aliveShips);
-    this.combat.resolveCollisions(aliveShips);
-    const newShips = this.combat.checkAndAdvanceWave(alivePlayers);
-    for (const { ai, ship } of newShips) {
-      this.aiStates.set(ship.id, ai);
+    this.combat.tickProjectiles(this.aliveShips);
+    this.combat.resolveCollisions(this.aliveShips);
+
+    const newShips = this.combat.checkAndAdvanceWave(this.alivePlayers);
+    for (let i = 0; i < newShips.length; i++) {
+      this.aiStates.set(newShips[i]!.ship.id, newShips[i]!.ai);
     }
 
     if (st.tick % SAVE_EVERY_TICKS === 0) this.persistence.markDirty();
@@ -357,36 +370,33 @@ class GameRoom extends DurableObject<Env> {
   private processPlayerMovement(player: Ship, msg: any): void {
     if (typeof msg.seq === "number") player.inputSeq = msg.seq;
 
-    // New format: throttle, strafe, turn, aimAngle
-    // Old format: forward, strafe, angle (backward compatible)
-    const hasNewFormat = typeof msg.throttle === "number" || typeof msg.strafe === "number" || typeof msg.turn === "number";
-    const hasOldFormat = typeof msg.forward === "number" || typeof msg.strafe === "number";
-    const hasWorld = typeof msg.vx === "number" || typeof msg.vy === "number";
-
-    if (hasNewFormat) {
+    if (typeof msg.throttle === "number" || typeof msg.strafe === "number" || typeof msg.turn === "number") {
       let f = clamp(Number(msg.throttle ?? 0), -1, 1);
       let s = clamp(Number(msg.strafe ?? 0), -1, 1);
-      const mag = Math.hypot(f, s);
-      if (mag > 1) { f /= mag; s /= mag; }
+
+      // Fast magnitude (Sin Math.hypot para más velocidad)
+      const magSq = f * f + s * s;
+      if (magSq > 1) {
+        const mag = Math.sqrt(magSq);
+        f /= mag; s /= mag;
+      }
+
       player.inputForward = f;
       player.inputStrafe = s;
-      if (typeof msg.turn === "number") {
-        player.inputTurn = clamp(Number(msg.turn), -1, 1);
-      }
-      if (typeof msg.aimAngle === "number") {
-        player.targetAngle = msg.aimAngle;
-      }
-    } else if (hasOldFormat) {
+      if (typeof msg.turn === "number") player.inputTurn = clamp(Number(msg.turn), -1, 1);
+      if (typeof msg.aimAngle === "number") player.targetAngle = msg.aimAngle;
+
+    } else if (typeof msg.forward === "number" || typeof msg.strafe === "number") {
       let f = clamp(Number(msg.forward ?? 0), -1, 1);
       let s = clamp(Number(msg.strafe ?? 0), -1, 1);
-      const mag = Math.hypot(f, s);
-      if (mag > 1) { f /= mag; s /= mag; }
+      const magSq = f * f + s * s;
+      if (magSq > 1) { const mag = Math.sqrt(magSq); f /= mag; s /= mag; }
+
       player.inputForward = f;
       player.inputStrafe = s;
-      if (typeof msg.angle === "number") {
-        player.targetAngle = msg.angle;
-      }
-    } else if (hasWorld) {
+      if (typeof msg.angle === "number") player.targetAngle = msg.angle;
+
+    } else if (typeof msg.vx === "number" || typeof msg.vy === "number") {
       const rawX = clamp(Number(msg.vx ?? 0), -1, 1);
       const rawY = clamp(Number(msg.vy ?? 0), -1, 1);
       const cos = Math.cos(player.angle);
@@ -399,7 +409,7 @@ class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private processAdminMessage(ws: WebSocket, player: Ship, msg: any): void {
+  private async processAdminMessage(ws: WebSocket, player: Ship, msg: any): Promise<void> {
     const effect = processAdminCommand(msg, player, this.state, this.env);
     switch (effect.kind) {
       case "authed":
@@ -407,36 +417,43 @@ class GameRoom extends DurableObject<Env> {
         break;
       case "reset_all":
         this.safeBroadcast({ type: "admin_event", action: "reset_all" });
-        this.aiStates.clear();
+        this.state.wave = 1;
         this.persistence.markDirty();
-        void this.reconcileAlarmState();
+        break;
+      case "reset_data":
+        this.safeBroadcast({ type: "admin_event", action: "reset_data" });
+        this.ctx.storage.deleteAll().catch(() => { });
+        this.state = { ships: {}, players: {}, projectiles: {}, zones: initZones(), wave: 1, tick: 0 };
+        this.aiStates.clear();
+        for (const sock of this.ctx.getWebSockets()) sock.close(1000, "Server Wipe");
+        this.stopGameLoop();
         break;
       case "kick": {
-        const targetWs = this.ctx.getWebSockets().find(sock => {
-          const a = sock.deserializeAttachment() as { playerId?: string } | null;
-          return a?.playerId === effect.playerId;
-        });
-        if (targetWs) { try { targetWs.close(1000, "Kicked by admin"); } catch { } }
+        const targetWs = this.ctx.getWebSockets().find(s => (s.deserializeAttachment() as any)?.playerId === effect.playerId);
+        if (targetWs) { try { targetWs.close(1000, "Kicked"); } catch { } }
         this.safeBroadcast({ type: "player_leave", playerId: effect.playerId });
         this.persistence.markDirty();
-        void this.reconcileAlarmState();
         break;
       }
       case "set_wave":
         this.safeBroadcast({ type: "new_wave", wave: effect.wave });
         for (const { ship, ai } of effect.spawns) {
+          // FIX: Ahora sí agrega las naves al mapa
+          this.state.ships[ship.id] = ship;
           this.aiStates.set(ship.id, ai);
         }
         this.persistence.markDirty();
-        void this.reconcileAlarmState();
         break;
       case "clear_enemies":
         this.safeBroadcast({ type: "admin_event", action: "clear_enemies" });
-        for (const [id] of this.aiStates) {
-          if (!this.state.ships[id]) this.aiStates.delete(id);
+        // FIX: Eliminación real y física de los objetos
+        for (const id in this.state.ships) {
+          if (this.state.ships[id]?.controller === "ai") {
+            delete this.state.ships[id];
+            this.aiStates.delete(id);
+          }
         }
         this.persistence.markDirty();
-        void this.reconcileAlarmState();
         break;
       case "godmode":
         this.safeSend(ws, { type: "admin_godmode", active: effect.active });
@@ -445,12 +462,7 @@ class GameRoom extends DurableObject<Env> {
       case "heal_all":
         this.safeBroadcast({ type: "admin_event", action: "heal_all" });
         this.persistence.markDirty();
-        void this.reconcileAlarmState();
         break;
     }
-  }
-
-  private getEnemyScore(ship: Ship): number {
-    return (SHIP_CLASSES[ship.shipClass] ?? SHIP_CLASSES.corvette!).stats.score;
   }
 }

@@ -7,6 +7,7 @@ import type { ParsedMessage } from "../../infrastructure/network/network";
 export type AdminEffect =
   | { kind: "authed";       ok: boolean }
   | { kind: "reset_all" }
+  | { kind: "reset_data" }
   | { kind: "kick";         playerId: string }
   | { kind: "set_wave";     wave: number; spawns: Array<{ ship: Ship; ai: AiState }> }
   | { kind: "clear_enemies" }
@@ -65,6 +66,11 @@ export function processAdminCommand(
         if (ship.controller === "ai") delete state.ships[id];
       }
       return { kind: "clear_enemies" };
+    }
+
+    case "admin_reset_data": {
+      if (!player.isAdmin) return { kind: "none" };
+      return { kind: "reset_data" };
     }
 
     case "admin_godmode": {

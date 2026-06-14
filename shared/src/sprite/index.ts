@@ -1,2 +1,2 @@
-export type { Sprite, Attachment, MountArc } from "./spriteTypes";
+export type { Sprite, Attachment } from "./spriteTypes";
 export { checkPointHit, checkMatrixOverlap } from "./spriteCollision";

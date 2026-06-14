@@ -1,11 +1,13 @@
 import { SHIP_CLASSES } from "@speakerdust/shared";
 import type { ShipClass } from "../../src/core/ships/shipTypes";
 import { createPixelShipRenderer } from "./renderer/renderer";
+import { createMountRenderer, type MountRenderer, type MountContext } from "./mounts/index";
+import { getProjectileRenderer } from "./projectiles/index";
 
 const ALL_CLASSES: ShipClass[] = ["corvette", "destroyer", "missile_frigate", "cruiser", "battlecruiser", "battleship", "dreadnought"];
 import {
     INPUT_RATE, SPECTATOR_CAM_SPEED, COOLDOWN_TABLE, QUICK_CHAT,
-    PAL_SCOUT, PAL_CRUISER_ENEMY, PAL_CAPITAL, PAL_FLASH_RED, FIXED_DT,
+    PAL_FLASH_RED, FIXED_DT,
 } from "./constants";
 import {
     myId, myTeam, myWeapon, myShield, myMaxShield, myMaxHp,
@@ -21,17 +23,19 @@ import {
     adminHealBtn, adminResetDataBtn, restartBtn,
     setDiff, updateTeamBadge, hideGameOver,
     playerDamageFlashUntil,
+    drawWaveFlash, drawShieldRing, drawCrosshair, drawCooldownBar,
+    drawPlayerLabel, drawEnemyHPBar, drawClassSelector,
 } from "./uiManager";
 import { cameraX, cameraY, shakeX, shakeY, setCameraPosition, offsetCamera, updateScreenShake } from "./camera";
 import {
     renderPlayers, renderEnemies, renderBullets,
-    syncRenderState, syncShipPhysics, extrapolateBullets,
+    syncShipPhysics, extrapolateBullets,
 } from "./stateManager";
 import { tickParticles, drawParticles, clearParticles } from "./particleSystem";
 import { updateAudio } from "./audioManager";
 import { connect, send, socket } from "./networkManager";
 
-const ctx2d = canvas.getContext("2d")!;
+const ctx2d = canvas.getContext("2d", { alpha: false })!;
 let viewW = 0, viewH = 0;
 
 export function resizeCanvas(): void {
@@ -195,84 +199,13 @@ function drawObjectives(zones: Record<string, any>): void {
     }
 }
 
-function drawWaveFlash(): void {
-    if (waveFlash <= 0) return;
-    ctx2d.globalAlpha = (waveFlash / 50) * 0.3;
-    ctx2d.fillStyle = "#00e5ff";
-    ctx2d.fillRect(0, 0, WORLD_W, WORLD_H);
-    ctx2d.globalAlpha = 1;
-}
-
 function drawBullets(bullets: Record<string, any>): void {
+    const margin = 150;
     for (const id in bullets) {
         const b = bullets[id];
-        const margin = 150;
-        if (b.x < cameraX - margin || b.y < cameraY - margin ||
-            b.x > cameraX + viewW + margin || b.y > cameraY + viewH + margin) continue;
-
-        const a = b.angle !== undefined ? b.angle : Math.atan2(b.vy, b.vx);
-        const bx = b.x;
-        const by = b.y;
-
-        ctx2d.save();
-        ctx2d.translate(bx, by);
-        ctx2d.rotate(a);
-
-        const kind = b.kind;
-        if (kind === "naval_cannon") {
-            ctx2d.shadowBlur = 14; ctx2d.shadowColor = "#ffd36a";
-            ctx2d.fillStyle = "#ffb35a"; ctx2d.fillRect(-4, -4, 8, 8);
-            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#ffd36a"; ctx2d.fillRect(-7, -7, 14, 14);
-        } else if (kind === "autocannon") {
-            ctx2d.shadowBlur = 8; ctx2d.shadowColor = "#a8ff78";
-            ctx2d.fillStyle = "#ccffaa"; ctx2d.fillRect(-5, -1, 10, 3);
-            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#a8ff78"; ctx2d.fillRect(-7, -3, 14, 7);
-        } else if (kind === "plasma_broadside") {
-            ctx2d.shadowBlur = 10; ctx2d.shadowColor = "#cc00ff";
-            ctx2d.fillStyle = "#dd66ff"; ctx2d.fillRect(-3, -3, 6, 6);
-            ctx2d.globalAlpha = 0.4; ctx2d.fillStyle = "#aa00ff"; ctx2d.fillRect(-5, -5, 10, 10);
-        } else if (kind === "railgun") {
-            ctx2d.shadowBlur = 10; ctx2d.shadowColor = "#00e5ff";
-            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-12, -1, 24, 3);
-            ctx2d.globalAlpha = 0.35; ctx2d.fillStyle = "#00e5ff"; ctx2d.fillRect(-15, -3, 30, 7);
-        } else if (kind === "torpedo") {
-            ctx2d.shadowBlur = 8; ctx2d.shadowColor = "#ff9030";
-            ctx2d.fillStyle = "#ffaa00"; ctx2d.fillRect(-16, -3, 4, 6);
-            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-14, -2, 2, 4);
-            ctx2d.fillStyle = "#333333"; ctx2d.fillRect(-12, -5, 6, 10);
-            ctx2d.fillStyle = "#aaaaaa"; ctx2d.fillRect(-6, -4, 12, 8);
-            ctx2d.fillStyle = "#ff4444"; ctx2d.fillRect(6, -3, 6, 6);
-            ctx2d.fillRect(12, -2, 2, 4);
-        } else if (kind === "guided_missile") {
-            ctx2d.shadowBlur = 4; ctx2d.shadowColor = "#ff6a3d";
-            ctx2d.fillStyle = "#ffaa00"; ctx2d.fillRect(-12, -2, 3, 4);
-            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-10, -1, 1, 2);
-            ctx2d.fillStyle = "#888888"; ctx2d.fillRect(-9, -3, 5, 6);
-            ctx2d.fillStyle = "#cccccc"; ctx2d.fillRect(-4, -2, 8, 4);
-            ctx2d.fillStyle = "#555555"; ctx2d.fillRect(-6, -4, 4, 2);
-            ctx2d.fillStyle = "#555555"; ctx2d.fillRect(-6, 2, 4, 2);
-            ctx2d.fillStyle = "#ff4444"; ctx2d.fillRect(4, -2, 4, 4);
-            ctx2d.fillRect(8, -1, 2, 2);
-        } else if (kind === "energy_bomb") {
-            ctx2d.shadowBlur = 18; ctx2d.shadowColor = "#ffe66d";
-            ctx2d.fillStyle = "#ffcc00"; ctx2d.fillRect(-6, -6, 12, 12);
-            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-2, -2, 4, 4);
-            ctx2d.globalAlpha = 0.3; ctx2d.fillStyle = "#ffff66"; ctx2d.fillRect(-10, -10, 20, 20);
-        } else if (kind === "emp_launcher") {
-            ctx2d.shadowBlur = 12; ctx2d.shadowColor = "#66ccff";
-            ctx2d.fillStyle = "#ccffff"; ctx2d.fillRect(-4, -4, 8, 8);
-            ctx2d.globalAlpha = 0.4; ctx2d.fillStyle = "#3399ff"; ctx2d.fillRect(-8, -8, 16, 16);
-        } else if (kind === "point_defense") {
-            ctx2d.shadowBlur = 6; ctx2d.shadowColor = "#66ffcc";
-            ctx2d.fillStyle = "#66ffcc"; ctx2d.fillRect(-1, -1, 2, 2);
-            ctx2d.globalAlpha = 0.5; ctx2d.fillStyle = "#aaffee"; ctx2d.fillRect(-3, -3, 6, 6);
-        } else {
-            ctx2d.fillStyle = "#ffffff"; ctx2d.fillRect(-2, -2, 4, 4);
-        }
-
-        ctx2d.globalAlpha = 1;
-        ctx2d.shadowBlur = 0;
-        ctx2d.restore();
+        if (!b || typeof b.kind !== "string") continue;
+        const renderer = getProjectileRenderer(b.kind);
+        renderer.render(ctx2d, b, cameraX, cameraY, viewW, viewH, margin);
     }
 }
 
@@ -304,46 +237,64 @@ function makePlayerPalette(hsl: number[], team: string): Record<number, string> 
     return pal;
 }
 
-function drawShipEngines(
-    x: number, y: number, angle: number, shipClass: string,
-    color: string, ps: number, reverse: boolean = false
+// SO: Renderizar TODAS las monturas de una nave (armas + motores) mediante MountRenderer
+// R: https://stackoverflow.com/questions/2805591/oop-inheritance-patterns-for-game-entities
+//    Cada attachment se resuelve a un MountRenderer via Factory (createMountRenderer).
+//    No más funciones sueltas drawShipEngines() o renderWeaponAttachments().
+//    Para debug: showHitboxOverlay=true dibuja hitboxes (tecla G).
+
+const mountCache = new Map<string, MountRenderer[]>();
+
+function getMountRenderers(shipClass: string, loadout: Record<string, any> | undefined, color: string): MountRenderer[] {
+  const cacheKey = `${shipClass}_${color}`;
+  const cached = mountCache.get(cacheKey);
+  if (cached) return cached;
+
+  const def = SHIP_CLASSES[shipClass];
+  if (!def) return [];
+
+  const renderers: MountRenderer[] = [];
+  for (const att of def.visual.attachments) {
+    const r = createMountRenderer(att, loadout, color);
+    renderers.push(r);
+  }
+  mountCache.set(cacheKey, renderers);
+  return renderers;
+}
+
+// SO: Scratch MountContext mutable — evita el spread operator {…} en hot path
+// R: https://stackoverflow.com/questions/29902823/object-pooling-for-game-objects-in-javascript
+//    https://stackoverflow.com/questions/48822/object-pool-pattern
+//    Spread crea un objeto nuevo por llamada. Con 20 naves × 6 monturas × 60fps
+//    son ~7200 objetos/segundo al GC. Mutar campos en-place: 0 allocaciones.
+const _mc: MountContext = { shipX: 0, shipY: 0, shipAngle: 0, ps: 0, tick: 0 };
+
+function renderShipMounts(
+  x: number, y: number, angle: number, shipClass: string,
+  loadout: Record<string, any> | undefined, turretAngles: Record<string, number> | undefined,
+  ps: number, tick: number, color: string,
 ): void {
-    const def = SHIP_CLASSES[shipClass];
-    if (!def) return;
+  const renderers = getMountRenderers(shipClass, loadout, color);
+  _mc.shipX = x; _mc.shipY = y; _mc.shipAngle = angle; _mc.ps = ps; _mc.tick = tick;
 
-    ctx2d.save();
-    ctx2d.globalCompositeOperation = "screen";
+  for (const r of renderers) {
+    _mc.turretAngle = turretAngles?.[r.mount.id];
+    r.render(ctx2d, _mc);
+  }
+}
 
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const dir = reverse ? -1 : 1;
+function renderShipMountsDebug(
+  x: number, y: number, angle: number, shipClass: string,
+  loadout: Record<string, any> | undefined, turretAngles: Record<string, number> | undefined,
+  ps: number, tick: number, color: string,
+): void {
+  const renderers = getMountRenderers(shipClass, loadout, color);
+  _mc.shipX = x; _mc.shipY = y; _mc.shipAngle = angle; _mc.ps = ps; _mc.tick = tick;
 
-    for (const engine of def.attachments) {
-        if (engine.kind !== "engine") continue;
-        const mx = engine.x * ps;
-        const my = engine.y * ps;
-        const ex = x + mx * cos - my * sin;
-        const ey = y + mx * sin + my * cos;
-
-        const len = engine.size === "large" ? 14 : engine.size === "medium" ? 10 : 7;
-        const width = engine.size === "large" ? 5 : engine.size === "medium" ? 3 : 2;
-
-        for (let i = 0; i < len; i++) {
-            const t = i / len;
-            const trailDx = -Math.cos(angle) * dir;
-            const trailDy = -Math.sin(angle) * dir;
-            const pulse = Math.sin(performance.now() * 0.015 + i) * 2;
-            const jitter = Math.sin(performance.now() * 0.02 + i * 2.7) * (i * 0.5);
-            const px = ex + trailDx * (i * 4 + pulse) + jitter;
-            const py = ey + trailDy * (i * 4 + pulse) + jitter;
-
-            ctx2d.globalAlpha = (1 - t) * 0.7;
-            ctx2d.fillStyle = i < 2 ? "#ffffff" : color;
-            const sz = Math.max(1, Math.floor((1 - t) * width * (ps / 2.5)));
-            ctx2d.fillRect(px, py, sz, sz);
-        }
-    }
-    ctx2d.restore();
+  for (const r of renderers) {
+    _mc.turretAngle = turretAngles?.[r.mount.id];
+    r.debugDraw(ctx2d, _mc);
+  }
 }
 
 function drawEnemies(enemies: Record<string, any>): void {
@@ -354,32 +305,24 @@ function drawEnemies(enemies: Record<string, any>): void {
         const def = SHIP_CLASSES[shipClass];
         if (!def) continue;
 
-        const glowC = def.glowColor;
-        const pal = def.paletteKey === "capital" ? PAL_CAPITAL : def.paletteKey === "cruiser" ? PAL_CRUISER_ENEMY : PAL_SCOUT;
-        const r2 = def.boundingRadius;
-        const shadowBlur = Math.max(10, Math.round(r2 * 0.45));
+        const glowC = def.visual.glowColor;
+        const pal = def.visual.palette;
+        const r2 = Math.hypot(def.visual.w, def.visual.h) * 1.5;
         const hpBarWidth = Math.round(r2 * 0.9);
-        const hpBarYOffset = Math.round(def.h / 2 + 8);
-
+        const hpBarYOffset = Math.round(def.visual.h / 2 + 8);
         const rx = e.x;
         const ry = e.y;
-        drawShipEngines(rx, ry, e.heading ?? e.angle, shipClass, glowC, ps);
+        const turretAngles: Record<string, number> = {};
+        if (e.turrets) for (const t of e.turrets) turretAngles[t.id] = t.angle;
+        renderShipMounts(rx, ry, e.heading ?? e.angle, shipClass, def.defaultLoadout, turretAngles, ps, Math.floor(performance.now() / 50), glowC);
+        if (showHitboxOverlay) renderShipMountsDebug(rx, ry, e.heading ?? e.angle, shipClass, def.defaultLoadout, turretAngles, ps, Math.floor(performance.now() / 50), glowC);
 
-        ctx2d.shadowBlur = shadowBlur;
-        ctx2d.shadowColor = glowC;
-        drawPixelShip(def, rx, ry, e.heading ?? e.angle, pal, ps);
-        ctx2d.shadowBlur = 0;
-        if (showHitboxOverlay) drawHitboxOverlay(def, rx, ry, e.heading ?? e.angle, ps);
+        drawPixelShip(def.visual, rx, ry, e.heading ?? e.angle, pal, ps, glowC, 0);
+        if (showHitboxOverlay) drawHitboxOverlay(def.visual, rx, ry, e.heading ?? e.angle, ps);
 
         const maxHpSafe = e.maxHp > 0 ? e.maxHp : 10;
         const pct = Math.max(0, Math.min(1, e.hp / maxHpSafe));
-        const bh = 3;
-        const bx = e.x - hpBarWidth / 2;
-        const by = e.y - hpBarYOffset;
-        ctx2d.fillStyle = "#220000";
-        ctx2d.fillRect(bx, by, hpBarWidth, bh);
-        ctx2d.fillStyle = pct > 0.6 ? glowC : pct > 0.3 ? "#ffaa00" : "#ff2020";
-        ctx2d.fillRect(bx, by, Math.round(hpBarWidth * pct), bh);
+        drawEnemyHPBar(ctx2d, e.x, e.y - hpBarYOffset, pct, hpBarWidth, glowC);
     }
 }
 
@@ -394,92 +337,67 @@ function drawPlayers(
         const p = players[id];
         if (!p.alive) continue;
         const isMe = id === myId;
-        const hsl = parseHSL(p.color ?? "hsl(180,80%,60%)");
         const prx = p.x;
         const pry = p.y;
 
-        let pal = makePlayerPalette(hsl, p.team);
+        const playerDef = SHIP_CLASSES[p.shipClass || "corvette"];
+        let pal = playerDef?.visual.palette ?? makePlayerPalette([180, 80, 60], p.team);
         if (isMe && performance.now() < playerDamageFlashUntil) {
             pal = PAL_FLASH_RED;
         }
 
         const teamGlow = p.team === "red" ? "#ff3355" : p.team === "blue" ? "#3399ff" : (p.color ?? "#ffffff");
 
-        ctx2d.shadowBlur = isMe ? 22 : 14;
-        ctx2d.shadowColor = teamGlow;
-        const playerDef = SHIP_CLASSES[p.shipClass || "corvette"];
+        const ps = 3;
+        const trailColor = p.team === "red" ? "#ff5500" : (p.team === "blue" ? "#00aaff" : "#ffffff");
+
         if (playerDef) {
-            drawPixelShip(playerDef, prx, pry, p.heading ?? p.angle, pal, 3, playerDef.defaultLoadout, Math.floor(performance.now() / 50));
-            if (showHitboxOverlay) drawHitboxOverlay(playerDef, prx, pry, p.heading ?? p.angle, 3);
+            const turretAngles: Record<string, number> = {};
+            if (p.turrets) for (const t of p.turrets) turretAngles[t.id] = t.angle;
+            renderShipMounts(prx, pry, p.heading ?? p.angle, p.shipClass || "corvette", playerDef.defaultLoadout, turretAngles, 3, Math.floor(performance.now() / 50), trailColor);
+            if (showHitboxOverlay) renderShipMountsDebug(prx, pry, p.heading ?? p.angle, p.shipClass || "corvette", playerDef.defaultLoadout, turretAngles, 3, Math.floor(performance.now() / 50), trailColor);
+            drawPixelShip(playerDef.visual, prx, pry, p.heading ?? p.angle, pal, 3, teamGlow, 0);
+            if (showHitboxOverlay) drawHitboxOverlay(playerDef.visual, prx, pry, p.heading ?? p.angle, 3);
         }
-        ctx2d.shadowBlur = 0;
+
+        const isBoosting = isMe 
+            ? (keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28
+            : (serverPlayers[id]?.boostCooldown > 0);
+
+        if (isBoosting) {
+            const mx_boost = -Math.cos(p.heading ?? p.angle);
+            const my_boost = -Math.sin(p.heading ?? p.angle);
+            ctx2d.globalAlpha = 0.7;
+            ctx2d.fillStyle = "#00ccff";
+            for (let i = 0; i < 6; i++) {
+                const t = performance.now() * 0.01 + i * 1.3;
+                const ex = p.x + mx_boost * (18 + i * 4) + Math.sin(t) * 2.5;
+                const ey = p.y + my_boost * (18 + i * 4) + Math.cos(t + 0.7) * 2.5;
+                ctx2d.fillRect(ex, ey, 3, 3);
+            }
+            ctx2d.globalAlpha = 1;
+        }
 
         if (isMe) {
-            const ps = 3;
-            const trailColor = myTeam === "red" ? "#ff5500" : (myTeam === "blue" ? "#00aaff" : "#ffffff");
-            const reversing = keys["s"] || keys["arrowdown"];
-            drawShipEngines(prx, pry, p.heading ?? p.angle, p.shipClass || "corvette", trailColor, ps, reversing);
-
-            if ((keys["shift"] || (serverPlayers[myId!]?.boostCooldown > 0)) && myBoostEnergy >= 28) {
-                const mx_boost = -Math.cos(p.heading ?? p.angle);
-                const my_boost = -Math.sin(p.heading ?? p.angle);
-                for (let i = 0; i < 6; i++) {
-                    const t = performance.now() * 0.01 + i * 1.3;
-                    const ex = p.x + mx_boost * (18 + i * 4) + Math.sin(t) * 2.5;
-                    const ey = p.y + my_boost * (18 + i * 4) + Math.cos(t + 0.7) * 2.5;
-                    ctx2d.globalAlpha = 0.7;
-                    ctx2d.fillStyle = "#00ccff";
-                    ctx2d.fillRect(ex, ey, 3, 3);
-                }
-                ctx2d.globalAlpha = 1;
+            if (myShield > 0) {
+                drawShieldRing(ctx2d, prx, pry, myShield);
             }
         }
 
-        if (isMe && myShield > 0) {
-            ctx2d.strokeStyle = `rgba(68,170,255,${0.15 + myShield * 0.12})`;
-            ctx2d.lineWidth = 2;
-            ctx2d.beginPath();
-            ctx2d.arc(prx, pry, 28, 0, Math.PI * 2);
-            ctx2d.stroke();
-        }
-
         if (isMe && !gameOver) {
-            ctx2d.strokeStyle = "rgba(0,229,255,0.22)";
-            ctx2d.lineWidth = 1;
-            ctx2d.setLineDash([5, 7]);
-            ctx2d.beginPath(); ctx2d.moveTo(p.x, p.y); ctx2d.lineTo(mx, my); ctx2d.stroke();
-            ctx2d.setLineDash([]);
-            const cs = 9;
-            ctx2d.strokeStyle = "rgba(0,229,255,0.8)";
-            ctx2d.lineWidth = 1;
-            ctx2d.beginPath();
-            ctx2d.moveTo(mx - cs, my); ctx2d.lineTo(mx + cs, my);
-            ctx2d.moveTo(mx, my - cs); ctx2d.lineTo(mx, my + cs);
-            ctx2d.stroke();
-            ctx2d.beginPath(); ctx2d.arc(mx, my, 4, 0, Math.PI * 2); ctx2d.stroke();
+            drawCrosshair(ctx2d, p.x, p.y, mx, my);
 
             const now = performance.now();
             const cd = (COOLDOWN_TABLE as Record<string, number>)[myWeapon] || 200;
             const elapsed = now - lastShot;
             const remaining = Math.max(0, cd - elapsed);
             if (remaining > 0) {
-                const barLen = 20;
-                const ratio = remaining / cd;
-                ctx2d.fillStyle = "rgba(255,255,255,0.7)";
-                ctx2d.fillRect(mx - barLen / 2, my + 15, barLen, 3);
-                ctx2d.fillStyle = "#ffaa00";
-                ctx2d.fillRect(mx - barLen / 2, my + 15, barLen * (1 - ratio), 3);
+                drawCooldownBar(ctx2d, mx, my, remaining / cd);
             }
         }
 
-        ctx2d.font = "6px 'Press Start 2P', monospace";
-        ctx2d.textAlign = "center";
-        ctx2d.fillStyle = isMe ? "rgba(0,229,255,0.85)"
-            : p.team === "red" ? "rgba(255,100,100,0.7)"
-                : p.team === "blue" ? "rgba(100,180,255,0.7)" : "rgba(200,220,255,0.5)";
         const tagY = p.y - (isMe ? 42 : 30);
-        if (p.name) ctx2d.fillText(p.name.slice(0, 8), p.x, tagY - 8);
-        ctx2d.fillText(`${p.score ?? 0}`, p.x, tagY);
+        drawPlayerLabel(ctx2d, p.x, tagY, p.name ?? "", p.score ?? 0, isMe, p.team);
     }
 }
 
@@ -534,7 +452,7 @@ let mx = WORLD_W / 2, my = WORLD_H / 2;
 let screenMx = window.innerWidth / 2, screenMy = window.innerHeight / 2;
 let lastShot = 0;
 
-canvas.addEventListener("mousemove", (e: MouseEvent) => {
+window.addEventListener("mousemove", (e: MouseEvent) => {
     const r = canvas.getBoundingClientRect();
     screenMx = e.clientX - r.left;
     screenMy = e.clientY - r.top;
@@ -543,12 +461,13 @@ canvas.addEventListener("mousedown", (e: MouseEvent) => {
     const r = canvas.getBoundingClientRect();
     const clickX = e.clientX - r.left;
     const clickY = e.clientY - r.top;
-    const btnW = 88;
-    const btnH = 20;
-    const gap = 3;
+    // BUGFIX: Match the draw offset used in drawClassSelector (viewH - btnH - 50)
+    const btnW = 95;
+    const btnH = 26;
+    const gap = 8;
     const totalW = ALL_CLASSES.length * (btnW + gap) - gap;
     const startX = (viewW - totalW) / 2;
-    const selectorY = viewH - btnH - 6;
+    const selectorY = viewH - btnH - 50;
 
     if (e.button === 0 && clickY >= selectorY && clickY <= selectorY + btnH) {
         for (let i = 0; i < ALL_CLASSES.length; i++) {
@@ -575,7 +494,9 @@ canvas.addEventListener("contextmenu", (e: Event) => e.preventDefault());
 function fireShot(): void {
     const now = performance.now();
     const cd = (COOLDOWN_TABLE as Record<string, number>)[myWeapon] ?? 200;
-    if (now - lastShot < cd || gameOver) return;
+    // BUGFIX: Only block if gameOver is truly set, not if we just respawned
+    if (gameOver) return;
+    if (now - lastShot < cd) return;
     lastShot = now;
     send("shoot");
 }
@@ -643,10 +564,10 @@ function sendInput(): void {
     let throttle = 0, strafe = 0, turn = 0;
     if (keys["w"] || keys["arrowup"]) throttle += 1;
     if (keys["s"] || keys["arrowdown"]) throttle -= 1;
-    if (keys["a"] || keys["arrowleft"]) strafe -= 1;
-    if (keys["d"] || keys["arrowright"]) strafe += 1;
-    if (keys["q"] || keys["a"]) turn -= 1;
-    if (keys["e"] || keys["d"]) turn += 1;
+    if (keys["q"]) strafe -= 1;
+    if (keys["e"]) strafe += 1;
+    if (keys["a"] || keys["arrowleft"]) turn -= 1;
+    if (keys["d"] || keys["arrowright"]) turn += 1;
     const p = serverPlayers[myId!];
     let aimAngle = p ? Math.atan2(my - p.y, mx - p.x) : 0;
     aimAngle = Math.round(aimAngle * 100) / 100;
@@ -732,7 +653,7 @@ function gameLoop(now: number): void {
 
     drawBackground();
     drawObjectives(serverZones);
-    drawWaveFlash();
+    drawWaveFlash(ctx2d, (waveFlash / 50) * 0.3, WORLD_W, WORLD_H);
     drawBullets(renderBullets);
     drawEnemies(renderEnemies);
     drawPlayers(
@@ -746,43 +667,7 @@ function gameLoop(now: number): void {
 
     if (waveFlash > 0) setWaveFlash(waveFlash - 1);
 
-    drawClassSelector();
-}
-
-function drawClassSelector(): void {
-    const dpr = window.devicePixelRatio || 1;
-    const myClass = serverPlayers[myId!]?.shipClass || "corvette";
-    const btnW = 88;
-    const btnH = 20;
-    const gap = 3;
-    const totalW = ALL_CLASSES.length * (btnW + gap) - gap;
-    const startX = (viewW - totalW) / 2;
-    const y = viewH - btnH - 6;
-
-    ctx2d.save();
-    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx2d.globalAlpha = 0.85;
-
-    for (let i = 0; i < ALL_CLASSES.length; i++) {
-        const cls = ALL_CLASSES[i]!;
-        const def = SHIP_CLASSES[cls];
-        if (!def) continue;
-        const x = startX + i * (btnW + gap);
-        const isSelected = cls === myClass;
-
-        ctx2d.fillStyle = isSelected ? def.glowColor : "#222";
-        ctx2d.fillRect(x, y, btnW, btnH);
-        ctx2d.strokeStyle = def.glowColor;
-        ctx2d.lineWidth = isSelected ? 2 : 1;
-        ctx2d.strokeRect(x, y, btnW, btnH);
-
-        ctx2d.fillStyle = "#fff";
-        ctx2d.font = "10px monospace";
-        ctx2d.textAlign = "center";
-        ctx2d.fillText(def.stats.label, x + btnW / 2, y + btnH / 2 + 3);
-    }
-
-    ctx2d.restore();
+    drawClassSelector(ctx2d, ALL_CLASSES, serverPlayers[myId!]?.shipClass || "corvette", viewW, viewH);
 }
 
 connect();

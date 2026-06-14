@@ -10,7 +10,6 @@ import { rand } from "../../core/math";
 
 export function createPlayerWithShip(playerId: string, team: Team): { player: Player, ship: Ship } {
   const player = new Player({ id: playerId, team });
-  
   const ship = new Ship({
     id: playerId,
     controller: "player",

@@ -9,7 +9,6 @@ export interface CollisionGrid {
   readonly h: number;
   readonly centerX: number;
   readonly centerY: number;
-  readonly boundingRadius: number;
 }
 
 /**

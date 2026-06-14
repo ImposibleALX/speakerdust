@@ -116,22 +116,50 @@ export function syncShipPhysics(renderMap: Record<string, any>, serverMap: Recor
 
 /**
  * Interpolación de balas autoritativa.
- * Usa suavizado exponencial para converger a la posición del servidor,
- * evitando la extrapolación lineal desde spawn que rompe misiles guiados (torpedo/guided_missile).
+ * BUGFIX: When a bullet first appears, extrapolate backwards using its velocity
+ * so it starts near the spawn point (turret), not at the server's current position.
+ * This prevents the "hyperacceleration" visual glitch where bullets seemed to teleport.
  */
+let _lastFrameTime = 0;
+
 export function extrapolateBullets(serverBullets: Record<string, any>, lastTickTime: number): void {
-    const dt = Math.min((performance.now() - lastTickTime) / 1000, 0.1);
-    const alpha = 1 - Math.pow(1 - 0.6, dt * 60);
+    const now = performance.now();
+    // SO: Usar frame delta (no tick age) para velocidad constante entre frames
+    // R: https://stackoverflow.com/questions/22128680/client-side-extrapolation-jitter
+    //    dt = tick age → f sube y baja con cada tick = tirones.
+    //    frameDt = tiempo entre frames → velocidad CONSTANTE = fluido.
+    const frameDt = _lastFrameTime === 0 ? 0 : Math.min((now - _lastFrameTime) / 1000, 0.05);
+    _lastFrameTime = now;
+
+    // Tick age solo para la corrección (alpha), no para la velocidad
+    const tickAge = Math.min((now - lastTickTime) / 1000, 0.1);
+    const alpha = Math.min(0.25, 1 - Math.pow(1 - 0.6, tickAge * 60));
 
     for (const id in serverBullets) {
         const b = serverBullets[id];
 
         if (!renderBullets[id]) {
-            renderBullets[id] = { ...b };
+            // BUGFIX: Bullets appear at server position which is already mid-flight.
+            // Estimate the visual spawn point by stepping backwards ~3 ticks worth of velocity.
+            // This makes bullets appear to originate from the ship's turret, not mid-air.
+            // Exception: guided missiles and torpedoes change direction each tick, so
+            // backwards extrapolation would place them at the wrong position. Skip for them.
+            const vx = b.vx ?? 0;
+            const vy = b.vy ?? 0;
+            const isGuided = b.guidance === "guided";
+            const BACK_STEPS = isGuided ? 0 : 3;
+            renderBullets[id] = {
+                ...b,
+                x: b.x - vx * BACK_STEPS,
+                y: b.y - vy * BACK_STEPS,
+            };
         } else {
             const r = renderBullets[id];
-            r.x += (b.x - r.x) * alpha;
-            r.y += (b.y - r.y) * alpha;
+            // Convert per-frame velocity to per-tick, combine with snap correction
+            // https://stackoverflow.com/questions/66782355/client-side-extrapolation
+            const f = frameDt * (1000 / 33);
+            r.x += (b.vx ?? 0) * f + (b.x - r.x) * alpha;
+            r.y += (b.vy ?? 0) * f + (b.y - r.y) * alpha;
         }
 
         const r = renderBullets[id];

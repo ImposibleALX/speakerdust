@@ -1,5 +1,4 @@
-import type { Sprite, Attachment, WeaponKind } from "@speakerdust/shared";
-import { drawWeaponOnMount, createWeaponCache } from "./weaponRenderer";
+import type { Sprite } from "@speakerdust/shared";
 
 interface ShipCacheEntry {
   canvas: HTMLCanvasElement;
@@ -8,8 +7,6 @@ interface ShipCacheEntry {
 }
 
 export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
-  createWeaponCache();
-
   const shipCache = new Map<string, ShipCacheEntry>();
 
   let spriteIdCounter = 0;
@@ -25,40 +22,52 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
   }
 
   let paletteVersion = 0;
-  const paletteKeys = new Map<string, number>();
+  // WeakMap: usa identidad de referencia (===) en vez de JSON.stringify
+  // La paleta no muta y su referencia es estable (cacheadas en _palCache de game.ts)
+  // https://stackoverflow.com/questions/29413222/what-are-the-actual-uses-of-es6-weakmap
+  const paletteIds = new WeakMap<Record<number, string>, number>();
 
   function paletteId(palette: Record<number, string>): number {
-    const str = JSON.stringify(palette);
-    const existing = paletteKeys.get(str);
+    const existing = paletteIds.get(palette);
     if (existing !== undefined) return existing;
     const id = ++paletteVersion;
-    paletteKeys.set(str, id);
+    paletteIds.set(palette, id);
     return id;
   }
 
   function getCachedShip(
     sprite: Sprite,
     palette: Record<number, string>,
-    ps: number
+    ps: number,
+    glowColor: string,
+    glowBlur: number,
   ): ShipCacheEntry {
-    const key = `${getSpriteId(sprite.pixels)}_${ps}_${paletteId(palette)}`;
+    const key = `${getSpriteId(sprite.pixels)}_${ps}_${paletteId(palette)}_${glowColor}_${glowBlur}`;
     const existing = shipCache.get(key);
     if (existing) return existing;
 
     const { pixels, w, h } = sprite;
+    const baseW = w * ps;
+    const baseH = h * ps;
+    const pad = glowBlur;
+    const totalW = baseW + pad * 2;
+    const totalH = baseH + pad * 2;
     const oc = document.createElement("canvas");
-    oc.width = w * ps;
-    oc.height = h * ps;
+    oc.width = totalW;
+    oc.height = totalH;
     const octx = oc.getContext("2d")!;
 
+    octx.shadowBlur = glowBlur;
+    octx.shadowColor = glowColor;
     for (let r = 0; r < h; r++) {
       for (let c = 0; c < w; c++) {
         const v = pixels[r * w + c];
         if (!v || !palette[v]) continue;
         octx.fillStyle = palette[v]!;
-        octx.fillRect(c * ps, r * ps, ps, ps);
+        octx.fillRect(c * ps + pad, r * ps + pad, ps, ps);
       }
     }
+    octx.shadowBlur = 0;
 
     const entry: ShipCacheEntry = { canvas: oc, cx: oc.width / 2, cy: oc.height / 2 };
     shipCache.set(key, entry);
@@ -72,50 +81,15 @@ export function createPixelShipRenderer(ctx: CanvasRenderingContext2D) {
     angle: number,
     palette: Record<number, string>,
     ps: number,
-    loadout?: Record<string, WeaponKind>,
-    tick?: number
+    glowColor: string,
+    glowBlur: number,
   ): void {
-    const cached = getCachedShip(sprite, palette, ps);
+    const cached = getCachedShip(sprite, palette, ps, glowColor, glowBlur);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(angle);
-    ctx.drawImage(cached.canvas, -Math.floor(cached.cx), -Math.floor(cached.cy));
+    ctx.drawImage(cached.canvas, -cached.cx, -cached.cy);
     ctx.restore();
-
-    if (loadout && sprite.attachments.length > 0) {
-      renderWeaponAttachments(ctx, sprite.attachments, loadout, cx, cy, angle, tick ?? 0, ps);
-    }
-  }
-
-  function renderWeaponAttachments(
-    c: CanvasRenderingContext2D,
-    attachments: readonly Attachment[],
-    loadout: Record<string, WeaponKind>,
-    shipX: number,
-    shipY: number,
-    shipAngle: number,
-    tick: number,
-    ps: number
-  ): void {
-    const cos = Math.cos(shipAngle);
-    const sin = Math.sin(shipAngle);
-
-    for (const mount of attachments) {
-      if (mount.kind !== "weapon_mount") continue;
-      const weaponKind = loadout[mount.id];
-      if (!weaponKind) continue;
-
-      const mx = mount.x * ps;
-      const my = mount.y * ps;
-      const worldX = shipX + mx * cos - my * sin;
-      const worldY = shipY + mx * sin + my * cos;
-
-      let weaponAngle = shipAngle;
-      if (mount.mountArc === "broadside") {
-        weaponAngle += mount.x < 0 ? -Math.PI / 2 : Math.PI / 2;
-      }
-      drawWeaponOnMount(c, weaponKind, worldX, worldY, weaponAngle, tick);
-    }
   }
 
   function drawHitboxOverlay(

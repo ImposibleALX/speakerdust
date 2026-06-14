@@ -1,6 +1,7 @@
 import { Ship } from "../../core/ships/Ship";
 import type { ShipClass, AiState } from "../../core/ships/shipTypes";
 import type { ControlPoint } from "../../core/world/zones";
+import { findNearestZone } from "../../core/world/zones";
 import type { WeaponKind } from "../../core/combat/weaponStats";
 import { WEAPON_STATS } from "../../core/combat/weaponStats";
 import { SHIP_CLASSES, type ShipAI } from "@speakerdust/shared";
@@ -41,6 +42,8 @@ export function createEnemyShip(shipClass: ShipClass, wave: number): { ship: Shi
       frustration: 0,
       wave,
       formationIndex: 0,
+      rangeState: "combat",
+      rangeStateTimer: 0,
     },
   };
 }
@@ -86,10 +89,29 @@ export function countEnemyShips(ships: Ship[]): Record<ShipClass, number> {
   return counts as Record<ShipClass, number>;
 }
 
-export function predictLeadAngle(x: number, y: number, target: Ship, lead: number): number {
-  const leadX = target.x + target.vx * lead;
-  const leadY = target.y + target.vy * lead;
-  return Math.atan2(leadY - y, leadX - x);
+export function predictLeadAngle(shooterX: number, shooterY: number, target: Ship, weaponSpeed: number): number {
+  const dx = target.x - shooterX;
+  const dy = target.y - shooterY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (weaponSpeed <= 0.1 || dist === 0) {
+    return Math.atan2(dy, dx);
+  }
+
+  const tvx = target.vx || 0;
+  const tvy = target.vy || 0;
+
+  let timeToImpact = dist / weaponSpeed;
+
+  let futureX = target.x + tvx * timeToImpact;
+  let futureY = target.y + tvy * timeToImpact;
+  let futureDist = Math.sqrt((futureX - shooterX) ** 2 + (futureY - shooterY) ** 2);
+  timeToImpact = futureDist / weaponSpeed;
+
+  const finalX = target.x + tvx * timeToImpact;
+  const finalY = target.y + tvy * timeToImpact;
+
+  return Math.atan2(finalY - shooterY, finalX - shooterX);
 }
 
 /** Pick the best target: lowest HP within range, then nearest */
@@ -104,9 +126,9 @@ function pickTarget(enemy: Ship, alivePlayers: Ship[], aiCfg: ShipAI): Ship | nu
 
     let score = 0;
     score -= dist * 0.3;
-    score -= hpPct * 100;
-    if (p.empTicks > 0) score += 30;
-    if (dist < aiCfg.evasionRange) score += 20;
+    score -= hpPct * 500;
+    if (p.empTicks > 0) score += 100;
+    if (dist < aiCfg.evasionRange) score += 50;
 
     if (score > bestScore) {
       bestScore = score;
@@ -148,14 +170,15 @@ export function tickEnemyAI(
   enemy: Ship,
   ai: AiState,
   alivePlayers: Ship[],
+  aliveEnemies: Ship[],
   enemyCounts: Record<ShipClass, number>,
-  nearestZone: Pick<ControlPoint, "x" | "y" | "radius"> | null,
-): void {
+  zones: Record<string, ControlPoint>,
+): Ship | null {
   enemy.boostCooldown--;
   if (enemy.boostCooldown < 0) enemy.boostCooldown = 0;
-  enemy.boostEnergy = Math.min(100, enemy.boostEnergy + (SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!).stats.boostRegenRate);
-
   const def = SHIP_CLASSES[enemy.shipClass] ?? SHIP_CLASSES.corvette!;
+  enemy.boostEnergy = Math.min(100, enemy.boostEnergy + def.stats.boostRegenRate);
+
   const stats = def.stats;
   const aiCfg = def.ai;
 
@@ -186,7 +209,6 @@ export function tickEnemyAI(
     }
   }
 
-  // --- Aim logic (deterministic lead prediction) ---
   let desiredAngle = enemy.angle;
 
   if (target) {
@@ -197,64 +219,104 @@ export function tickEnemyAI(
       ai.reactionTicks--;
     }
 
-    const leadTicks = aiCfg.leadMul;
-    const rawAngle = predictLeadAngle(enemy.x, enemy.y, target, leadTicks);
-    desiredAngle = rawAngle;
-
-    // --- Weapon selection ---
+    // --- 1. Weapon selection FIRST ---
     selectBestWeapon(enemy, targetDist);
 
-    // --- Range management ---
-    const margin = 60;
-    const seek = targetDist > stats.idealRange + margin;
-    const retreat = targetDist < stats.idealRange - margin;
+    // --- 2. Physics-based lead prediction ---
+    const currentWeaponStats = WEAPON_STATS[enemy.weapon];
+    const bulletSpeed = currentWeaponStats ? currentWeaponStats.speed : 10;
+    const leadAngle = predictLeadAngle(enemy.x, enemy.y, target, bulletSpeed);
 
-    // --- Boost logic ---
-    const wantBoost = seek && enemy.boostCooldown <= 0 && enemy.boostEnergy >= 10 && aiCfg.boostAggression > 0;
-    if (wantBoost && (alivePlayers.length <= 3 || targetDist > stats.idealRange * 2)) {
-      enemy.boostQueued = true;
-    }
-
-    // --- Evasion: when in threat range, strafe perpendicular ---
-    const inDanger = targetDist < aiCfg.evasionRange;
-    const evadeDir = (ai.formationIndex % 2 === 0 ? 1 : -1) * (enemy.id.charCodeAt(0) % 2 === 0 ? 1 : -1);
-
-    // --- Movement: combine seek/retreat + orbit + evasion ---
+    // --- Range state machine with hysteresis ---
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const dirX = dx / targetDist;
     const dirY = dy / targetDist;
 
+    const closeThreshold = stats.idealRange * 0.5;
+    const farThreshold = stats.idealRange * 1.5;
+
+    ai.rangeStateTimer--;
+
+    if (enemy.hp < enemy.maxHp * 0.25) {
+      ai.rangeState = "retreating";
+      ai.rangeStateTimer = 30;
+    } else if (targetDist < closeThreshold && ai.rangeState !== "retreating") {
+      ai.rangeState = "retreating";
+      ai.rangeStateTimer = 40;
+    } else if (targetDist > farThreshold && ai.rangeState !== "closing") {
+      ai.rangeState = "closing";
+      ai.rangeStateTimer = 40;
+    } else if (ai.rangeStateTimer <= 0) {
+      ai.rangeState = "combat";
+    }
+
+    // --- Boost logic ---
+    const wantBoost = ai.rangeState === "closing"
+      || (ai.rangeState === "retreating" && enemy.hp < enemy.maxHp * 0.25);
+    if (wantBoost && enemy.boostCooldown <= 0 && enemy.boostEnergy >= 10 && aiCfg.boostAggression > 0) {
+      if (ai.rangeState === "closing" && targetDist > stats.idealRange * 2) {
+        enemy.boostQueued = true;
+      }
+      if (ai.rangeState === "retreating" && enemy.hp < enemy.maxHp * 0.25) {
+        enemy.boostQueued = true;
+      }
+    }
+
+    // --- Movement (exclusive state machine) ---
+    const dirToTarget = Math.atan2(dy, dx);
     let moveX = 0;
     let moveY = 0;
 
-    if (seek) {
-      moveX += dirX * aiCfg.seekSpeed;
-      moveY += dirY * aiCfg.seekSpeed;
-    }
-    if (retreat) {
-      moveX -= dirX * aiCfg.retreatSpeed;
-      moveY -= dirY * aiCfg.retreatSpeed;
+    switch (ai.rangeState) {
+      case "closing":
+        moveX += dirX * aiCfg.seekSpeed;
+        moveY += dirY * aiCfg.seekSpeed;
+        break;
+
+      case "combat": {
+        const orbitPhase = ai.wave * 0.31 + ai.formationIndex * 0.73;
+        const orbitSide = Math.sin(orbitPhase) >= 0 ? 1 : -1;
+        const orbitAngle = dirToTarget + (Math.PI / 2) * orbitSide;
+        moveX += Math.cos(orbitAngle) * aiCfg.orbitPower;
+        moveY += Math.sin(orbitAngle) * aiCfg.orbitPower;
+
+        ai.maneuverTimer = (ai.maneuverTimer || 0) - 1;
+        if (ai.maneuverTimer <= 0) {
+          ai.maneuverTimer = 60 + Math.random() * 60;
+          ai.maneuverDir = Math.random() > 0.5 ? 1 : -1;
+        }
+        const strafeAngle = dirToTarget + Math.PI / 2;
+        moveX += Math.cos(strafeAngle) * ai.maneuverDir * 0.4;
+        moveY += Math.sin(strafeAngle) * ai.maneuverDir * 0.4;
+
+        if (targetDist < aiCfg.evasionRange) {
+          const evadeDir = (ai.formationIndex % 2 === 0 ? 1 : -1) * (enemy.id.charCodeAt(0) % 2 === 0 ? 1 : -1);
+          const evadeAngle = dirToTarget + (Math.PI / 2) * evadeDir;
+          moveX += Math.cos(evadeAngle) * 0.35;
+          moveY += Math.sin(evadeAngle) * 0.35;
+        }
+        break;
+      }
+
+      case "retreating":
+        moveX -= dirX * aiCfg.retreatSpeed;
+        moveY -= dirY * aiCfg.retreatSpeed;
+        break;
     }
 
-    // Orbit around target (deterministic based on ship id and wave)
-    const orbitPhase = ai.wave * 0.31 + ai.formationIndex * 0.73;
-    const orbitSide = Math.sin(orbitPhase) >= 0 ? 1 : -1;
-    const orbitAngle = desiredAngle + (Math.PI / 2) * orbitSide;
-    moveX += Math.cos(orbitAngle) * aiCfg.orbitPower;
-    moveY += Math.sin(orbitAngle) * aiCfg.orbitPower;
-
-    // Evasion: when in danger, add perpendicular movement
-    if (inDanger) {
-      const evadeAngle = desiredAngle + (Math.PI / 2) * evadeDir;
-      moveX += Math.cos(evadeAngle) * 0.35;
-      moveY += Math.sin(evadeAngle) * 0.35;
-    }
-
-    // Retreat when critically damaged
-    if (enemy.hp < enemy.maxHp * 0.25) {
-      moveX -= dirX * 0.6;
-      moveY -= dirY * 0.6;
+    // --- Separation steering ---
+    for (const other of aliveEnemies) {
+      if (other.id === enemy.id || !other.alive) continue;
+      const odx = enemy.x - other.x;
+      const ody = enemy.y - other.y;
+      const odSq = odx * odx + ody * ody;
+      if (odSq < 6400) {
+        const od = Math.sqrt(odSq) || 1;
+        const repelStr = 0.6 * (1 - od / 80);
+        moveX += (odx / od) * repelStr;
+        moveY += (ody / od) * repelStr;
+      }
     }
 
     const cos = Math.cos(enemy.angle);
@@ -262,62 +324,45 @@ export function tickEnemyAI(
     enemy.inputForward = clamp(moveX * cos + moveY * sin, -1, 1);
     enemy.inputStrafe = clamp(moveX * -sin + moveY * cos, -1, 1);
 
+    // SO: Decouple body rotation from turret aiming.
+    // R: https://stackoverflow.com/questions/1731899/ai-turret-aiming-vs-body-rotation
+    //    Body faces the TARGET directly (so rotation only changes when the target
+    //    moves, not when the player's velocity vector changes).
+    //    Turrets independently track the lead angle for precision aiming.
+    desiredAngle = Math.atan2(dy, dx);
+    enemy.targetAngle = leadAngle;
+
   } else {
-    // No target: move toward last known position or zone center
     if (ai.lastSeenPos) {
       const dx = ai.lastSeenPos.x - enemy.x;
       const dy = ai.lastSeenPos.y - enemy.y;
       desiredAngle = Math.atan2(dy, dx);
+      enemy.targetAngle = desiredAngle;
       enemy.inputForward = 0.6;
       enemy.inputStrafe = 0;
-    } else if (nearestZone) {
-      const dx = nearestZone.x - enemy.x;
-      const dy = nearestZone.y - enemy.y;
-      desiredAngle = Math.atan2(dy, dx);
-      enemy.inputForward = 0.4;
-      enemy.inputStrafe = 0;
     } else {
-      enemy.inputForward = 0;
-      enemy.inputStrafe = 0;
-    }
-  }
-
-  enemy.targetAngle = approachAngle(enemy.angle, desiredAngle, enemy.turnRate);
-}
-
-export function tickEnemyCombat(
-  enemy: Ship,
-  ai: AiState,
-  alivePlayers: Ship[],
-  fireEnemyWeapon: (enemy: Ship, target: Ship) => void,
-): void {
-  if (alivePlayers.length === 0) return;
-
-  let closestPlayer: Ship | null = null;
-  let closestDSq = Infinity;
-
-  if (ai.targetId) {
-    const target = alivePlayers.find(p => p.id === ai.targetId);
-    if (target) {
-      const dSq = distSq(enemy, target);
-      closestPlayer = target;
-      closestDSq = dSq;
-    }
-  }
-
-  if (!closestPlayer) {
-    for (const p of alivePlayers) {
-      const dSq = distSq(enemy, p);
-      if (dSq < closestDSq) {
-        closestDSq = dSq;
-        closestPlayer = p;
+      const nearestZone = findNearestZone(enemy.x, enemy.y, zones);
+      if (nearestZone) {
+        const dx = nearestZone.x - enemy.x;
+        const dy = nearestZone.y - enemy.y;
+        desiredAngle = Math.atan2(dy, dx);
+        enemy.targetAngle = desiredAngle;
+        enemy.inputForward = 0.4;
+        enemy.inputStrafe = 0;
+      } else {
+        enemy.targetAngle = enemy.angle;
+        enemy.inputForward = 0;
+        enemy.inputStrafe = 0;
       }
     }
   }
 
-  if (!closestPlayer) return;
+  // BUGFIX: Clamp turn input using the shortest angular delta so that AI ships
+  // turn at a physical rate instead of snapping immediately to the player's direction.
+  const delta = shortestAngleDelta(enemy.angle, desiredAngle);
+  enemy.inputTurn = clamp(delta * 1.5, -1, 1);
 
-  fireEnemyWeapon(enemy, closestPlayer);
+  return target;
 }
 
 export interface SplashKill {

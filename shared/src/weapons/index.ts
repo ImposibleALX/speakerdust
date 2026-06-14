@@ -7,6 +7,7 @@ export type {
   WeaponRenderConfig,
   StaticRenderConfig,
   DynamicRenderConfig,
+  NoRenderConfig,
   WeaponArc,
 } from "./weaponDefs";
 

@@ -7,14 +7,17 @@ export type {
   WeaponRenderConfig,
   StaticRenderConfig,
   DynamicRenderConfig,
+  NoRenderConfig,
   WeaponArc,
+  MovementType,
+  GuidanceType,
 } from "./weapons/weaponDefs";
 
 export { WEAPON_DEFS, WEAPON_STATS, EMP_DURATION_TICKS } from "./weapons/weaponDefs";
 
 export type { ShipClassDef, ShipGameplayStats, ShipAI, ExplosionConfig } from "./ships";
 
-export { SHIP_CLASSES } from "./ships";
+export { SHIP_CLASSES, ShipVisualDef } from "./ships";
 
 export * from "./sprite";
 export * from "./physics";

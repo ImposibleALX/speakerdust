@@ -42,6 +42,7 @@ export interface PublicShip {
   boostEnergy: number;
   weaponHeat: number;
   empTicks: number;
+  turrets?: { id: string; angle: number }[];
   name?: string;
   color?: string;
   team?: Team;
@@ -92,8 +93,9 @@ export function toPublicShip(s: Ship, p?: Player): PublicShip {
     thrustForce: s.thrustForce,
     strafeThrustForce: s.strafeThrustForce,
     boostEnergy: Math.round(s.boostEnergy),
-    weaponHeat: Math.round(Math.max(...s.turretMounts.map(m => m.heat), 0)),
+    weaponHeat: Math.round(Math.max(...s.turrets.map(t => t.heat), 0)),
     empTicks: s.empTicks,
+    turrets: s.turrets.map(t => ({ id: t.attachmentId, angle: t.angle })),
   };
   pub.name = p?.name;
   pub.color = p?.color;

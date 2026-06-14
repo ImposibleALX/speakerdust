@@ -1,6 +1,5 @@
-import type { Controller, ShipClass, Team, AiState, TurretMount } from "./shipTypes";
+import type { Controller, ShipClass, Team, AiState } from "./shipTypes";
 import type { WeaponKind } from "../combat/weaponStats";
-import type { MountArc } from "../combat/patterns";
 import { SHIP_CLASSES, checkMatrixOverlap, type ShipPhysicsState, type Sprite } from "@speakerdust/shared";
 import {
   SHIP_BOOST_COST,
@@ -22,38 +21,32 @@ const EMPTY_BONUS: ShipZoneBonus = {
   pressureScale: 1,
 };
 
-function computeMountRestAngle(shipAngle: number, mountArc: MountArc, mx: number): number {
-  if (mountArc === "forward") return shipAngle;
-  if (mountArc === "omni") return shipAngle;
-  if (mountArc === "broadside") {
-    return shipAngle + (mx >= 0 ? Math.PI / 2 : -Math.PI / 2);
-  }
-  return shipAngle;
-}
+import { createTurret, Turret } from "../combat/Turret";
 
-function initTurretMounts(shipClass: ShipClass, shipAngle: number): TurretMount[] {
+function initTurrets(shipClass: ShipClass, shipAngle: number): Turret[] {
   const def = SHIP_CLASSES[shipClass] ?? SHIP_CLASSES.corvette!;
   const loadout = def.defaultLoadout;
-  const mounts: TurretMount[] = [];
-  for (const att of def.attachments) {
+  const mounts: Turret[] = [];
+  for (const att of def.visual.attachments) {
     if (att.kind !== "weapon_mount") continue;
     const weaponKind = loadout[att.id];
     if (!weaponKind) continue;
-    const rest = computeMountRestAngle(shipAngle, att.mountArc, att.x);
-    mounts.push({
+    let minAngle = att.minAngle;
+    let maxAngle = att.maxAngle;
+    let turnRate = att.turnRate;
+    if (weaponKind === "railgun") { minAngle = 0; maxAngle = 0; turnRate = 0; }
+    const rest = shipAngle + (minAngle + maxAngle) / 2;
+    mounts.push(createTurret({
       attachmentId: att.id,
       weaponKind,
-      mountArc: att.mountArc,
       x: att.x,
       y: att.y,
+      minAngle,
+      maxAngle,
+      turnRate,
       size: att.size,
       restAngle: rest,
-      angle: rest,
-      targetAngle: rest,
-      cooldown: 0,
-      heat: 0,
-      enabled: true,
-    });
+    }));
   }
   return mounts;
 }
@@ -75,7 +68,7 @@ export class Ship {
   // Weapons
   weaponSlots: WeaponKind[];
   weapon: WeaponKind;
-  turretMounts: TurretMount[];
+  turrets: Turret[];
 
   // Defense
   hp: number;
@@ -85,15 +78,16 @@ export class Ship {
   shieldMax: number;
   shield: number;
   shieldRegenDelay: number;
-  iFrames: number;
 
   // Boost
   boostEnergy: number;
   boostCooldown: number;
   boostQueued: boolean;
+  boostTicks: number;
 
   // Status
   empTicks: number;
+  iFrames: number;
   alive: boolean;
 
   // Control Inputs
@@ -161,8 +155,8 @@ export class Ship {
     this.weaponSlots = [...stats.weaponSlots];
     this.weapon = stats.weaponSlots[0]!;
 
-    const startAngle = -Math.PI / 2;
-    this.turretMounts = initTurretMounts(config.shipClass, startAngle);
+    const startAngle = 0;
+    this.turrets = initTurrets(config.shipClass, startAngle);
 
     this.maxHp = stats.maxHp;
     this.hp = stats.maxHp;
@@ -171,13 +165,14 @@ export class Ship {
     this.shieldMax = stats.shieldMax;
     this.shield = stats.shieldMax;
     this.shieldRegenDelay = 0;
-    this.iFrames = 60;
 
     this.boostEnergy = 100;
     this.boostCooldown = 0;
     this.boostQueued = false;
+    this.boostTicks = 0;
 
     this.empTicks = 0;
+    this.iFrames = 0;
     this.alive = true;
 
     this.inputForward = 0;
@@ -207,38 +202,46 @@ export class Ship {
       ? { ...EMPTY_BONUS, heatCool: zoneBonus * 0.1, energyRegen: zoneBonus * 0.1, shieldDelay: zoneBonus }
       : { ...EMPTY_BONUS, ...zoneBonus };
 
-    const empMul = this.empTicks > 0 ? 0.48 : 1;
-    if (this.empTicks > 0) this.empTicks--;
+    const def = SHIP_CLASSES[this.shipClass] ?? SHIP_CLASSES.corvette!;
+    const stats = def.stats;
+
+    const isEmped = this.empTicks > 0;
+    const empMul = isEmped ? 0.48 : 1;
+
+    if (isEmped) {
+      this.empTicks--;
+      this.boostQueued = false; // Cancela cualquier intento de boost bajo EMP
+    }
 
     const targetAngle = this.targetAngle;
     const throttle = this.inputForward;
     const strafe = this.inputStrafe;
-
     let turn = this.inputTurn ?? 0;
-    if (turn === 0 && targetAngle !== undefined && targetAngle !== this.angle) {
-      const delta = shortestAngleDelta(this.heading, targetAngle);
-      turn = clamp(delta * 6.0, -1, 1);
-    }
 
     if (!this._physics) {
       this._physics = createShipPhysics(this.shipClass);
       initPhysicsFromShip(this._physics, this);
     }
 
-    const modifiers: { empMul?: number; boostImpulse?: number } = { empMul };
+    const modifiers: { empMul?: number; speedMul?: number; thrustMul?: number } = { empMul };
 
     if (this.boostQueued && this.alive) {
       if (this.boostCooldown <= 0 && this.boostEnergy >= SHIP_BOOST_COST) {
-        const impulse = (1.2 / Math.max(1, this.mass)) * empMul;
-        modifiers.boostImpulse = impulse;
+        this.boostTicks = 5;
         this.boostEnergy -= SHIP_BOOST_COST;
         this.boostCooldown = 120;
       }
       this.boostQueued = false;
     }
 
+    if (this.boostTicks > 0) {
+      modifiers.speedMul = 1.6;
+      modifiers.thrustMul = 1.6;
+      this.boostTicks--;
+    }
+
     this._physics.update(
-      { throttle, strafe, turn, aimAngle: targetAngle },
+      { throttle, strafe, turn },
       1 / 30.303,
       modifiers
     );
@@ -246,37 +249,23 @@ export class Ship {
     applyPhysicsToShip(this, this._physics);
 
     if (this.boostCooldown > 0) this.boostCooldown--;
-    if (this.iFrames > 0) this.iFrames--;
 
-    // Update turret mounts: track aim, rotate, cooldown, heat dissipation
-    const def = SHIP_CLASSES[this.shipClass] ?? SHIP_CLASSES.corvette!;
-    const stats = def.stats;
-    const heatCoolRate = (stats.heatCoolRate + (bonus?.heatCool ?? 0)) / Math.max(1, this.turretMounts.length);
+    // Torretas (El EMP ralentiza severamente su rotación)
+    const heatCoolRate = (stats.heatCoolRate + (bonus?.heatCool ?? 0)) / Math.max(1, this.turrets.length);
+    const turretTurnMul = isEmped ? 0.1 : 1; // Giran al 10% de su capacidad si hay EMP
 
-    for (const mount of this.turretMounts) {
-      if (mount.mountArc === "forward") {
-        mount.targetAngle = this.angle;
-      } else if (mount.mountArc === "omni") {
-        mount.targetAngle = this.targetAngle;
-      } else if (mount.mountArc === "broadside") {
-        const restRel = mount.x >= 0 ? Math.PI / 2 : -Math.PI / 2;
-        const aimRel = shortestAngleDelta(this.angle, this.targetAngle);
-        const clampedRel = clamp(aimRel, restRel - Math.PI / 3, restRel + Math.PI / 3);
-        mount.targetAngle = this.angle + clampedRel;
-      }
-      if (mount.angle !== mount.targetAngle) {
-        const delta = shortestAngleDelta(mount.angle, mount.targetAngle);
-        const step = this.turnRate * 0.06;
-        mount.angle = Math.abs(delta) <= step ? mount.targetAngle : mount.angle + clamp(delta, -step, step);
-      }
-      if (mount.cooldown > 0) mount.cooldown--;
-      if (mount.heat > 0) mount.heat = Math.max(0, mount.heat - heatCoolRate);
+    for (const turret of this.turrets) {
+      turret.update(this.angle, this.targetAngle, this.turnRate * turretTurnMul, heatCoolRate);
     }
 
     this.boostEnergy = Math.min(100, this.boostEnergy + stats.boostRegenRate + (bonus.energyRegen || 0));
 
+    // Regeneración de escudos
     if (this.shieldMax > 0 && this.shield < this.shieldMax) {
-      if (this.shieldRegenDelay > 0) {
+      if (isEmped) {
+        // El EMP frena por completo la regeneración, manteniendo el delay
+        this.shieldRegenDelay = Math.max(this.shieldRegenDelay, stats.shieldRegenDelay);
+      } else if (this.shieldRegenDelay > 0) {
         this.shieldRegenDelay -= Math.max(1, 1 + (bonus.shieldDelay || 0));
         if (this.shieldRegenDelay < 0) this.shieldRegenDelay = 0;
       } else {
@@ -293,51 +282,70 @@ export class Ship {
     fromImpact = false,
     armorPierce = false,
   ): { dead: boolean; shieldHit: boolean; armorHit: boolean } {
-    if (!this.alive) return { dead: false, shieldHit: false, armorHit: false };
-    if (this.iFrames > 0 && !fromImpact) return { dead: false, shieldHit: false, armorHit: false };
-    if (this.godmode) return { dead: false, shieldHit: false, armorHit: false };
+    if (!this.alive || this.godmode) return { dead: false, shieldHit: false, armorHit: false };
 
     const stats = (SHIP_CLASSES[this.shipClass] ?? SHIP_CLASSES.corvette!).stats;
+    let remainingDamage = damage;
+    let shieldHit = false;
 
+    // 1. Escudo absorbe DAÑO REAL
     if (this.shield > 0) {
-      this.shield = Math.max(0, this.shield - 1);
+      shieldHit = true;
+      if (this.shield >= remainingDamage) {
+        this.shield -= remainingDamage;
+        remainingDamage = 0;
+      } else {
+        remainingDamage -= this.shield;
+        this.shield = 0;
+      }
       this.shieldRegenDelay = stats.shieldRegenDelay;
-      this.iFrames = fromImpact ? 8 : 14;
-      return { dead: false, shieldHit: true, armorHit: false };
     }
 
-    let hullDamage = damage;
-    if (this.armor > 0 && !armorPierce) {
-      const absorbable = Math.floor(this.armor * 0.45);
-      const absorbed = Math.max(1, Math.min(this.armor, absorbable));
-      this.armor -= absorbed;
-      hullDamage = Math.max(0, damage - absorbed);
+    let armorHit = false;
+
+    // 2. Armadura Plana (Absorbe un 50% de todo daño hasta romperse)
+    if (remainingDamage > 0 && this.armor > 0 && !armorPierce) {
+      armorHit = true;
+      const ABSORPTION_PERCENT = 0.50; // Bloquea 50% del daño entrante
+      let damageToArmor = remainingDamage * ABSORPTION_PERCENT;
+
+      if (this.armor >= damageToArmor) {
+        this.armor -= damageToArmor;
+        remainingDamage -= damageToArmor; // El otro 50% pasa al casco
+      } else {
+        // Se rompe la armadura, absorbe el sobrante y todo lo demás va al HP
+        remainingDamage -= this.armor;
+        this.armor = 0;
+      }
     }
 
-    this.hp = Math.max(0, this.hp - hullDamage);
-    this.iFrames = fromImpact ? 7 : 10;
-    this.shieldRegenDelay = Math.max(this.shieldRegenDelay, stats.shieldRegenDelay);
+    // 3. Daño restante al Casco (HP)
+    if (remainingDamage > 0) {
+      this.hp = Math.max(0, this.hp - remainingDamage);
+      this.shieldRegenDelay = Math.max(this.shieldRegenDelay, stats.shieldRegenDelay);
+    }
 
     if (this.hp <= 0) {
       this.alive = false;
       return { dead: true, shieldHit: false, armorHit: this.armor > 0 };
     }
-    return { dead: false, shieldHit: false, armorHit: this.armor > 0 };
+
+    return { dead: false, shieldHit, armorHit };
   }
 
-  public handleCollision(other: Ship): { aHurt: boolean; bHurt: boolean } {
+  public handleCollision(other: Ship): { aHurt: boolean; bHurt: boolean; aDamage: number; bDamage: number } {
     const defA = SHIP_CLASSES[this.shipClass] ?? SHIP_CLASSES.corvette!;
     const defB = SHIP_CLASSES[other.shipClass] ?? SHIP_CLASSES.corvette!;
 
-    const spriteA: Sprite = { pixels: defA.pixels, w: defA.w, h: defA.h, attachments: defA.attachments };
-    const spriteB: Sprite = { pixels: defB.pixels, w: defB.w, h: defB.h, attachments: defB.attachments };
+    const spriteA: Sprite = { pixels: defA.visual.pixels, w: defA.visual.w, h: defA.visual.h, attachments: defA.visual.attachments };
+    const spriteB: Sprite = { pixels: defB.visual.pixels, w: defB.visual.w, h: defB.visual.h, attachments: defB.visual.attachments };
 
     const mtv = checkMatrixOverlap(
       spriteA, { x: this.x, y: this.y }, this.heading,
       spriteB, { x: other.x, y: other.y }, other.heading,
     );
 
-    if (!mtv) return { aHurt: false, bHurt: false };
+    if (!mtv) return { aHurt: false, bHurt: false, aDamage: 0, bDamage: 0 };
 
     const { overlap, normal } = mtv;
     const nx = normal.x;
@@ -347,6 +355,7 @@ export class Ship {
     const massB = Math.max(1, other.mass);
     const totalMass = massA + massB;
 
+    // Desplazamiento por colisión (Empuje)
     const pushA = overlap * (massB / totalMass);
     const pushB = overlap * (massA / totalMass);
     this.x += nx * pushA;
@@ -354,6 +363,7 @@ export class Ship {
     other.x -= nx * pushB;
     other.y -= ny * pushB;
 
+    // Transferencia de Impulso Físico
     const relVelX = this.vx - other.vx;
     const relVelY = this.vy - other.vy;
     const vn = relVelX * nx + relVelY * ny;
@@ -367,8 +377,21 @@ export class Ship {
       other.vy -= (impulse * ny) / massB;
     }
 
+    // Cálculo de Daño por Colisión Basado en Masa y Velocidad Relativa
     const relSpeed = Math.hypot(this.vx - other.vx, this.vy - other.vy);
-    const isHurt = relSpeed > SHIP_COLLISION_DAMAGE_SPEED;
+    const threshold = SHIP_COLLISION_DAMAGE_SPEED; // Umbral a partir del cual duele
+
+    let aDamage = 0;
+    let bDamage = 0;
+
+    if (relSpeed > threshold) {
+      const speedFactor = relSpeed - threshold;
+      const damageMultiplier = 0.5; // Multiplicador general del daño
+
+      // Te haces más daño si el oponente pesa más.
+      aDamage = speedFactor * massB * damageMultiplier;
+      bDamage = speedFactor * massA * damageMultiplier;
+    }
 
     if (this._physics) {
       this._physics.setState({
@@ -383,7 +406,12 @@ export class Ship {
       });
     }
 
-    return { aHurt: isHurt, bHurt: isHurt };
+    return {
+      aHurt: aDamage > 0,
+      bHurt: bDamage > 0,
+      aDamage,
+      bDamage
+    };
   }
 
   public respawn(): void {
@@ -391,9 +419,9 @@ export class Ship {
     this.x = 200 + Math.random() * 4600;
     this.y = 200 + Math.random() * 2600;
     this.vx = 0; this.vy = 0;
-    this.angle = -Math.PI / 2;
-    this.targetAngle = -Math.PI / 2;
-    this.heading = -Math.PI / 2;
+    this.angle = 0;
+    this.targetAngle = 0;
+    this.heading = 0;
     this.angularVelocity = 0;
     this.alive = true;
     this.weapon = stats.weaponSlots[0]!;
@@ -407,12 +435,13 @@ export class Ship {
     this.hp = stats.maxHp;
     this.maxHp = stats.maxHp;
     this.empTicks = 0;
+    this.iFrames = 0;
     this.inputForward = 0;
     this.inputStrafe = 0;
     this.inputTurn = 0;
     this.boostQueued = false;
-    this.iFrames = 60;
-    this.turretMounts = initTurretMounts(this.shipClass, -Math.PI / 2);
+    this.boostTicks = 0;
+    this.turrets = initTurrets(this.shipClass, 0);
 
     if (this._physics) {
       this._physics.setState({
@@ -425,6 +454,8 @@ export class Ship {
   public fullReset(): void {
     this.respawn();
     this.score = 0;
+    this.godmode = false;
+    this.isAdmin = false;
   }
 
   public cycleToNextWeapon(): WeaponKind {

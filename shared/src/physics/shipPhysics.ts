@@ -1,5 +1,3 @@
-// ----------- TYPES & INTERFACES (unchanged) -----------
-
 export type Vec2 = { x: number; y: number };
 
 export interface ShipConfig {
@@ -7,20 +5,20 @@ export interface ShipConfig {
   maxLinearSpeed: number;
   maxReverseSpeed: number;
   maxAngularSpeed: number;
-  thrustAccel: number;
+  thrustAccel: number; // Tratados como "Fuerza" internamente al dividirse por masa
   reverseAccel: number;
   strafeAccel: number;
-  turnAccel: number;
+  turnAccel: number;   // Torque máximo de giro
   linearDrag: number;
   angularDrag: number;
   stopEpsilon: number;
-  inputSmoothing: number;          // now treated as a time constant (seconds)
+  inputSmoothing: number; // Constante de tiempo en segundos
 }
 
 export interface ShipCommand {
-  throttle: number;   // -1..1
-  strafe: number;     // -1..1
-  turn: number;       // -1..1
+  throttle: number; // -1..1
+  strafe: number;   // -1..1
+  turn: number;     // -1..1
   aimAngle?: number;
 }
 
@@ -35,10 +33,11 @@ export interface ShipPhysicsState {
 
 export interface PhysicsModifiers {
   empMul?: number;
-  boostImpulse?: number;
+  speedMul?: number;
+  thrustMul?: number;
 }
 
-// ----------- UTILITY FUNCTIONS -----------
+// ----------- FUNCIONES DE UTILIDAD -----------
 
 export function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -50,13 +49,12 @@ export function normalizeAngle(a: number): number {
   return a;
 }
 
-/** Exponential smoothing factor that is frame‑rate independent.
- *  Assumes `timeConstant` is in seconds. */
 function smoothFactor(dt: number, timeConstant: number): number {
+  if (timeConstant <= 0) return 1;
   return 1 - Math.exp(-dt / timeConstant);
 }
 
-// ----------- PHYSICS CLASS -----------
+// ----------- CLASE DE FÍSICAS -----------
 
 export class ShipPhysics {
   position: Vec2 = { x: 0, y: 0 };
@@ -106,85 +104,126 @@ export class ShipPhysics {
   }
 
   update(cmd: ShipCommand, dt: number, modifiers: PhysicsModifiers = {}): void {
-    const safeDt = Math.min(dt, 0.1);
+    if (dt <= 0) return;
+    const safeDt = Math.min(dt, 0.1); // Prevenir explosiones de físicas en lag spikes
 
-    // Convertir aimAngle a velocidad angular deseada
+    const m = this.config.mass;
+    const alphaInput = smoothFactor(safeDt, this.config.inputSmoothing);
+
+    // ==========================================
+    // 1. ROTACIÓN (Físicas de Torque + Drag)
+    // ==========================================
     let desiredAngularVel = 0;
+
     if (cmd.aimAngle !== undefined) {
+      // Si apuntamos con ratón/mando, calculamos la velocidad necesaria para llegar
       const error = normalizeAngle(cmd.aimAngle - this.heading);
-      const ANGULAR_GAIN = 3.5;
+      const ANGULAR_GAIN = 5.0; // Qué tan agresivo busca el ángulo
       desiredAngularVel = clamp(error * ANGULAR_GAIN, -this.config.maxAngularSpeed, this.config.maxAngularSpeed);
+      // Reseteamos el turn manual para que no haya latigazos si se desactiva el aimAngle
+      this.smoothedTurn = desiredAngularVel / this.config.maxAngularSpeed;
     } else {
-      // Suavizado del turn
-      const alpha = smoothFactor(safeDt, this.config.inputSmoothing);
-      this.smoothedTurn += (cmd.turn - this.smoothedTurn) * alpha;
+      // Giro manual con teclas/stick suavizado
+      this.smoothedTurn += (cmd.turn - this.smoothedTurn) * alphaInput;
       desiredAngularVel = this.smoothedTurn * this.config.maxAngularSpeed;
     }
 
-    // PD Controller para torque
-    const m = this.config.mass;
-    const kp = this.config.turnAccel / m;
-    const kd = this.config.angularDrag;  // Usamos angularDrag como coeficiente de amortiguación
-    let torque = kp * (desiredAngularVel - this.angularVelocity) - kd * this.angularVelocity;
-    const MAX_TORQUE = this.config.turnAccel * 2 / m;
-    torque = clamp(torque, -MAX_TORQUE, MAX_TORQUE);
-    this.angularVelocity += torque * safeDt;
+    // Aceleración necesaria para alcanzar la velocidad deseada
+    const requiredAngularAccel = (desiredAngularVel - this.angularVelocity) / safeDt;
+
+    // El motor aplica torque, limitado por su capacidad física
+    const maxEngineAngularAccel = this.config.turnAccel / m;
+    let appliedAngularAccel = clamp(requiredAngularAccel, -maxEngineAngularAccel, maxEngineAngularAccel);
+
+    // Aplicar aceleración del motor
+    this.angularVelocity += appliedAngularAccel * safeDt;
+
+    // Aplicar fricción angular de forma independiente al framerate (Drag real)
+    this.angularVelocity *= Math.exp(-this.config.angularDrag * safeDt);
+
+    // Límite duro de velocidad angular
     this.angularVelocity = clamp(this.angularVelocity, -this.config.maxAngularSpeed, this.config.maxAngularSpeed);
 
-    // Resto igual: local axes, thrust, modifiers, drag (solo linearDrag), speed caps, integración...
-    const forward = { x: Math.cos(this.heading), y: Math.sin(this.heading) };
-    const right = { x: -Math.sin(this.heading), y: Math.cos(this.heading) };
+    // ==========================================
+    // 2. TRASLACIÓN (Movimiento Lineal)
+    // ==========================================
 
-    // Throttle smoothing (igual que antes)
-    const alphaLin = smoothFactor(safeDt, this.config.inputSmoothing);
-    this.smoothedThrottle += (cmd.throttle - this.smoothedThrottle) * alphaLin;
-    this.smoothedStrafe += (cmd.strafe - this.smoothedStrafe) * alphaLin;
+    // Optimización trigonométrica: Calcular seno y coseno solo UNA vez por frame
+    const cosH = Math.cos(this.heading);
+    const sinH = Math.sin(this.heading);
 
-    const forwardAccel = this.smoothedThrottle >= 0
-      ? (this.smoothedThrottle * this.config.thrustAccel) / m
-      : (this.smoothedThrottle * this.config.reverseAccel) / m;
-    const strafeAccel = (this.smoothedStrafe * this.config.strafeAccel) / m;
-    this.velocity.x += (forward.x * forwardAccel + right.x * strafeAccel) * safeDt;
-    this.velocity.y += (forward.y * forwardAccel + right.y * strafeAccel) * safeDt;
+    // Suavizado lineal
+    this.smoothedThrottle += (cmd.throttle - this.smoothedThrottle) * alphaInput;
+    this.smoothedStrafe += (cmd.strafe - this.smoothedStrafe) * alphaInput;
 
-    // Modifiers
+    // Fuerzas (divididas por masa para obtener aceleración)
+    const thrustMul = modifiers.thrustMul ?? 1;
+    const forwardForce = this.smoothedThrottle >= 0
+      ? this.smoothedThrottle * this.config.thrustAccel * thrustMul
+      : this.smoothedThrottle * this.config.reverseAccel * thrustMul;
+
+    const strafeForce = this.smoothedStrafe * this.config.strafeAccel * thrustMul;
+
+    const forwardAccel = forwardForce / m;
+    const strafeAccel = strafeForce / m;
+
+    // Transformar fuerzas locales a ejes globales (X, Y) sin crear objetos en memoria
+    const accelX = (cosH * forwardAccel) - (sinH * strafeAccel);
+    const accelY = (sinH * forwardAccel) + (cosH * strafeAccel);
+
+    this.velocity.x += accelX * safeDt;
+    this.velocity.y += accelY * safeDt;
+
+    // ==========================================
+    // 3. MODIFICADORES EXTERNOS
+    // ==========================================
     if (modifiers.empMul !== undefined) {
       this.velocity.x *= modifiers.empMul;
       this.velocity.y *= modifiers.empMul;
       this.angularVelocity *= modifiers.empMul;
     }
-    if (modifiers.boostImpulse !== undefined) {
-      this.velocity.x += forward.x * modifiers.boostImpulse;
-      this.velocity.y += forward.y * modifiers.boostImpulse;
+
+    // ==========================================
+    // 4. FRICCIÓN LINEAL (Drag independiente del framerate)
+    // ==========================================
+    const linearDragFactor = Math.exp(-this.config.linearDrag * safeDt);
+    this.velocity.x *= linearDragFactor;
+    this.velocity.y *= linearDragFactor;
+
+    // ==========================================
+    // 5. LÍMITES DE VELOCIDAD DINÁMICOS
+    // ==========================================
+    const speedSq = this.velocity.x * this.velocity.x + this.velocity.y * this.velocity.y;
+
+    if (speedSq > 0.000001) {
+      const speed = Math.sqrt(speedSq);
+
+      // Proyección de la velocidad sobre el vector "Forward" (-1 a 1)
+      // Indica si la nave va hacia adelante (1), de lado (0) o en reversa (-1)
+      const forwardDot = (this.velocity.x * cosH + this.velocity.y * sinH) / speed;
+
+      // Interpolar el límite de velocidad: transiciones suaves si hace strafe y reversa a la vez
+      const t = (forwardDot + 1) / 2; // Normalizar de [-1, 1] a [0, 1]
+      const speedMul = modifiers.speedMul ?? 1;
+      const currentMaxSpeed = (this.config.maxReverseSpeed + t * (this.config.maxLinearSpeed - this.config.maxReverseSpeed)) * speedMul;
+
+      if (speed > currentMaxSpeed) {
+        const k = currentMaxSpeed / speed;
+        this.velocity.x *= k;
+        this.velocity.y *= k;
+      }
     }
 
-    // Linear drag (opcional, si quieres que la nave frene sola)
-    this.velocity.x -= this.velocity.x * this.config.linearDrag * safeDt;
-    this.velocity.y -= this.velocity.y * this.config.linearDrag * safeDt;
-
-    // Micro-drift kill
+    // ==========================================
+    // 6. MICRO-DRIFT KILL (Epsilon)
+    // ==========================================
     if (Math.abs(this.velocity.x) < this.config.stopEpsilon) this.velocity.x = 0;
     if (Math.abs(this.velocity.y) < this.config.stopEpsilon) this.velocity.y = 0;
     if (Math.abs(this.angularVelocity) < this.config.stopEpsilon) this.angularVelocity = 0;
 
-    // Speed caps
-    const speed = Math.hypot(this.velocity.x, this.velocity.y);
-    if (speed > 0.001) {
-      const forwardSpeed = this.velocity.x * forward.x + this.velocity.y * forward.y;
-      if (forwardSpeed >= 0) {
-        if (speed > this.config.maxLinearSpeed) {
-          const k = this.config.maxLinearSpeed / speed;
-          this.velocity.x *= k; this.velocity.y *= k;
-        }
-      } else {
-        if (speed > this.config.maxReverseSpeed) {
-          const k = this.config.maxReverseSpeed / speed;
-          this.velocity.x *= k; this.velocity.y *= k;
-        }
-      }
-    }
-
-    // Integración final
+    // ==========================================
+    // 7. INTEGRACIÓN FINAL
+    // ==========================================
     this.position.x += this.velocity.x * safeDt;
     this.position.y += this.velocity.y * safeDt;
     this.heading = normalizeAngle(this.heading + this.angularVelocity * safeDt);

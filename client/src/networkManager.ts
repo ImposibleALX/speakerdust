@@ -141,7 +141,7 @@ const msgHandlers: Record<string, (msg: any) => void> = {
         enqueueAudio({ type: "explosion" });
         const def = SHIP_CLASSES[msg.kind || ""];
         if (def) {
-            const ex = def.explosion;
+            const ex = def.visual.explosion;
             explode(msg.x, msg.y, [...ex.primaryColors], ex.primaryCount, ex.primarySize, ex.scale);
             const me = serverPlayers[myId!];
             if (me && me.alive && Math.hypot(msg.x - me.x, msg.y - me.y) < ex.screenShakeRadius) {
@@ -191,8 +191,10 @@ const msgHandlers: Record<string, (msg: any) => void> = {
         setRespawnState("idle");
         if (respawnTimer) { clearTimeout(respawnTimer); setRespawnTimer(null); }
         if (restartBtn) { restartBtn.disabled = false; setDiff(restartBtn, "↻ RESPECTAR"); }
+        // BUGFIX: Clear gameOver BEFORE resetting lastShot so fireShot() can run
         setGameOver(false);
         hideGameOver();
+        // BUGFIX: Reset lastShot to 0 so the player can fire immediately after respawn
         setLastShot(0);
         clearParticles();
     },

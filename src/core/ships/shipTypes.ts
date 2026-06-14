@@ -1,5 +1,4 @@
 import type { WeaponKind } from "../combat/weaponStats";
-import type { MountArc } from "../combat/patterns";
 
 export type Controller = "player" | "ai";
 export type Team = "red" | "blue" | "spectator";
@@ -15,20 +14,7 @@ export type ShipClass =
 
 export { Ship } from "./Ship";
 
-export interface TurretMount {
-  attachmentId: string;
-  weaponKind: WeaponKind;
-  mountArc: MountArc;
-  x: number;
-  y: number;
-  size: "small" | "medium" | "large";
-  restAngle: number;
-  angle: number;
-  targetAngle: number;
-  cooldown: number;
-  heat: number;
-  enabled: boolean;
-}
+export { Turret } from "../combat/Turret";
 
 /** AI memory stored externally, keyed by ship id */
 export interface AiState {
@@ -42,4 +28,6 @@ export interface AiState {
   frustration: number;
   wave: number;
   formationIndex: number;
+  rangeState: "closing" | "combat" | "retreating";
+  rangeStateTimer: number;
 }

@@ -2,7 +2,7 @@ export let audioCtx: AudioContext | null = null;
 let masterCompressor: DynamicsCompressorNode | null = null;
 let cachedNoiseBuffer: AudioBuffer | null = null;
 
-type AudioEvent =
+export type AudioEvent =
     | { type: "weapon"; weapon: string }
     | { type: "impact"; strong: boolean }
     | { type: "explosion" }
@@ -51,11 +51,12 @@ export function ensureAudio(): AudioContext | null {
         if (!Ctor) return null;
         audioCtx = new Ctor();
         masterCompressor = audioCtx.createDynamicsCompressor();
-        masterCompressor.threshold.setValueAtTime(-14, audioCtx.currentTime);
-        masterCompressor.knee.setValueAtTime(0, audioCtx.currentTime);
-        masterCompressor.ratio.setValueAtTime(12, audioCtx.currentTime);
-        masterCompressor.attack.setValueAtTime(0.003, audioCtx.currentTime);
-        masterCompressor.release.setValueAtTime(0.1, audioCtx.currentTime);
+        // Ajustes de compresión master para "pegar" mejor los sonidos sin ahogarlos
+        masterCompressor.threshold.setValueAtTime(-16, audioCtx.currentTime);
+        masterCompressor.knee.setValueAtTime(5, audioCtx.currentTime);
+        masterCompressor.ratio.setValueAtTime(8, audioCtx.currentTime);
+        masterCompressor.attack.setValueAtTime(0.002, audioCtx.currentTime);
+        masterCompressor.release.setValueAtTime(0.15, audioCtx.currentTime);
         masterCompressor.connect(audioCtx.destination);
         cachedNoiseBuffer = null;
     }
@@ -90,33 +91,39 @@ export function playTone(freq: number, duration: number, type: OscillatorType = 
     const now = ctxAudio.currentTime;
     osc.frequency.setValueAtTime(freq, now);
     if (sweepTo !== null) {
-        osc.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), now + duration);
+        // Envolvente de pitch exponencial (vital para SFX de impacto)
+        osc.frequency.exponentialRampToValueAtTime(Math.max(10, sweepTo), now + duration);
     }
     amp.gain.setValueAtTime(0, now);
-    amp.gain.linearRampToValueAtTime(gain, now + 0.002);
-    const releaseStart = now + duration - 0.004;
-    amp.gain.setValueAtTime(gain, releaseStart);
-    amp.gain.linearRampToValueAtTime(0.0001, now + duration);
+    amp.gain.linearRampToValueAtTime(gain, now + 0.002); // Attack
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + duration); // Decay exponencial suena más natural
     osc.connect(amp);
     amp.connect(masterCompressor);
     osc.start(now);
     osc.stop(now + duration);
 }
 
-export function playNoise(duration: number, gain = 0.06, filterType: BiquadFilterType = "bandpass", freq = 520, Q = 1): void {
+// Añadimos sweepToFreq para emular la pérdida acústica de energía
+export function playNoise(duration: number, gain = 0.06, filterType: BiquadFilterType = "bandpass", freq = 520, Q = 1, sweepToFreq: number | null = null): void {
     const ctxAudio = ensureAudio();
     if (!ctxAudio || !masterCompressor) return;
     const source = ctxAudio.createBufferSource();
     const amp = ctxAudio.createGain();
     const filter = ctxAudio.createBiquadFilter();
+
     filter.type = filterType;
-    filter.frequency.value = freq;
+    const now = ctxAudio.currentTime;
+    filter.frequency.setValueAtTime(freq, now);
+    if (sweepToFreq !== null) {
+        filter.frequency.exponentialRampToValueAtTime(Math.max(10, sweepToFreq), now + duration);
+    }
     filter.Q.value = Q;
     source.buffer = getNoiseBuffer(ctxAudio);
-    const now = ctxAudio.currentTime;
+
     amp.gain.setValueAtTime(0, now);
     amp.gain.linearRampToValueAtTime(gain, now + 0.002);
     amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
     source.connect(filter);
     filter.connect(amp);
     amp.connect(masterCompressor);
@@ -136,16 +143,18 @@ function playFM(freq: number, modFreq: number, modIndex: number, duration: numbe
     carrier.type = type;
     carrier.frequency.setValueAtTime(freq, now);
     if (sweepTo !== null) {
-        carrier.frequency.exponentialRampToValueAtTime(Math.max(20, sweepTo), now + duration);
+        carrier.frequency.exponentialRampToValueAtTime(Math.max(10, sweepTo), now + duration);
     }
-    modulator.frequency.value = modFreq;
-    modGain.gain.value = modIndex;
+
+    // SFX Theory: Barrido también en la modulación para que el timbre evolucione
+    modulator.frequency.setValueAtTime(modFreq, now);
+    modulator.frequency.exponentialRampToValueAtTime(Math.max(10, modFreq * 0.1), now + duration);
+    modGain.gain.setValueAtTime(modIndex, now);
+    modGain.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
     amp.gain.setValueAtTime(0, now);
     amp.gain.linearRampToValueAtTime(gain, now + 0.002);
-    const releaseStart = now + duration - 0.004;
-    amp.gain.setValueAtTime(gain, releaseStart);
-    amp.gain.linearRampToValueAtTime(0.0001, now + duration);
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
     modulator.connect(modGain);
     modGain.connect(carrier.frequency);
@@ -158,111 +167,79 @@ function playFM(freq: number, modFreq: number, modIndex: number, duration: numbe
     modulator.stop(now + duration);
 }
 
-function playLaserSound(gain = 0.03, duration = 0.05, baseFreq = 40): void {
-    const ctxAudio = ensureAudio();
-    if (!ctxAudio || !masterCompressor) return;
-    const now = ctxAudio.currentTime;
-    const ratios = [2, 3, 4.16, 5.43, 6.79, 8.21];
-    const bandpass = ctxAudio.createBiquadFilter();
-    bandpass.type = "bandpass";
-    bandpass.frequency.value = 10000;
-    const highpass = ctxAudio.createBiquadFilter();
-    highpass.type = "highpass";
-    highpass.frequency.value = 7000;
-    const masterGain = ctxAudio.createGain();
-    masterGain.gain.setValueAtTime(0, now);
-    masterGain.gain.linearRampToValueAtTime(gain, now + 0.001);
-    const releaseStart = now + duration - 0.004;
-    masterGain.gain.setValueAtTime(gain, releaseStart);
-    masterGain.gain.linearRampToValueAtTime(0.0001, now + duration);
-    masterGain.connect(masterCompressor);
-
-    for (const ratio of ratios) {
-        const osc = ctxAudio.createOscillator();
-        osc.type = "square";
-        osc.frequency.setValueAtTime(baseFreq * ratio, now);
-        osc.frequency.exponentialRampToValueAtTime(baseFreq * ratio * 1.5, now + duration);
-        osc.connect(bandpass);
-        osc.start(now);
-        osc.stop(now + duration);
-    }
-    bandpass.connect(highpass);
-    highpass.connect(masterGain);
-}
-
+// Mejora: Añadimos transitorio de Pitch en el kick para mayor "Punch" (Estilo 808/Arma)
 function playKickSound(freq = 120, duration = 0.5, gain = 0.04): void {
     const ctxAudio = ensureAudio();
     if (!ctxAudio || !masterCompressor) return;
     const now = ctxAudio.currentTime;
 
-    const osc1 = ctxAudio.createOscillator();
-    const osc2 = ctxAudio.createOscillator();
-    const g1 = ctxAudio.createGain();
-    const g2 = ctxAudio.createGain();
-    const master = ctxAudio.createGain();
+    const osc = ctxAudio.createOscillator();
+    const amp = ctxAudio.createGain();
+    osc.type = "sine"; // Usamos sine pura pero con un ataque de pitch muy agresivo
 
-    osc1.type = "triangle";
-    osc2.type = "sine";
+    // Transitorio de "Punch": Cae extremadamente rápido de agudo a grave en 0.03s
+    osc.frequency.setValueAtTime(freq * 3, now);
+    osc.frequency.exponentialRampToValueAtTime(freq, now + 0.03);
+    osc.frequency.exponentialRampToValueAtTime(20, now + duration);
 
-    osc1.frequency.setValueAtTime(freq, now);
-    osc1.frequency.exponentialRampToValueAtTime(20, now + duration);
-    osc2.frequency.setValueAtTime(freq * 0.4, now);
-    osc2.frequency.exponentialRampToValueAtTime(10, now + duration);
+    amp.gain.setValueAtTime(0, now);
+    amp.gain.linearRampToValueAtTime(gain, now + 0.002);
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
-    g1.gain.setValueAtTime(0, now);
-    g1.gain.linearRampToValueAtTime(gain, now + 0.002);
-    g1.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    g2.gain.setValueAtTime(0, now);
-    g2.gain.linearRampToValueAtTime(gain * 0.7, now + 0.002);
-    g2.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    osc.connect(amp);
+    amp.connect(masterCompressor);
 
-    master.gain.setValueAtTime(gain, now);
-
-    osc1.connect(g1);
-    osc2.connect(g2);
-    g1.connect(master);
-    g2.connect(master);
-    master.connect(masterCompressor);
-
-    osc1.start(now);
-    osc2.start(now);
-    osc1.stop(now + duration);
-    osc2.stop(now + duration);
+    osc.start(now);
+    osc.stop(now + duration);
 }
 
 export function playWeaponSound(weapon: string): void {
     switch (weapon) {
-        case "naval_cannon":
-            playFM(880, 280, 240, 0.05, "square", 0.035, 1600);
-            playNoise(0.04, 0.025, "lowpass", 4000, 2);
-            playKickSound(200, 0.04, 0.02);
-            break;
-        case "railgun":
-            playFM(1400, 380, 400, 0.06, "sawtooth", 0.03, 2200);
-            playNoise(0.03, 0.04, "lowpass", 6000, 3);
-            playLaserSound(0.015, 0.03, 80);
-            break;
-        case "plasma_broadside":
-            playFM(620, 150, 120, 0.04, "sawtooth", 0.025, 900);
-            playTone(820, 0.04, "triangle", 0.02, 1200);
-            playNoise(0.015, 0.015, "bandpass", 3200, 4);
-            playLaserSound(0.01, 0.02, 60);
-            break;
+        case "pdc":
         case "autocannon":
-            playFM(550, 200, 180, 0.035, "square", 0.03, 1100);
-            playTone(700, 0.03, "triangle", 0.02, 900);
-            playNoise(0.02, 0.02, "highpass", 3000, 2);
+            // PDC MEJORADO: Corto, chasquido metálico, estricto control dinámico para evitar "ruido de masa" al disparar en ráfaga.
+            // 1. Transitorio inicial ("Click" del percutor mecánico)
+            playTone(1200, 0.03, "square", 0.015, 200);
+            // 2. Ruido de gas expulsado (Cae de agudo a medio rápidamente)
+            playNoise(0.05, 0.02, "bandpass", 4000, 1.5, 1000);
+            // 3. Mini "Kick" para dar un ligero empuje que no embarre los graves
+            playKickSound(180, 0.04, 0.02);
             break;
+
+        case "naval_cannon":
+            // Artillería pesada: Caída de frecuencia grave + explosión de aire
+            playKickSound(120, 0.8, 0.07);
+            playNoise(0.6, 0.05, "lowpass", 600, 1, 100); // El ruido se oscurece al decaer
+            playTone(80, 0.4, "triangle", 0.04, 30);
+            break;
+
+        case "railgun":
+            // Latigazo supersónico electromagnético
+            playTone(800, 0.05, "sawtooth", 0.03, 3000); // "Carga" ultrarrápida (hacia arriba)
+            playNoise(0.2, 0.04, "highpass", 2500, 1, 500); // Crujido supersónico (crack)
+            playKickSound(250, 0.2, 0.04);
+            break;
+
+        case "plasma_broadside":
+            // Energía disipándose, láser ionizado clásico de SCI-FI
+            playFM(1500, 400, 1000, 0.35, "sine", 0.025, 150); // Caída pronunciada y limpia
+            playNoise(0.25, 0.015, "bandpass", 2000, 3, 500);
+            break;
+
         case "torpedo":
-            playFM(140, 30, 60, 0.18, "sawtooth", 0.04, 60);
-            playTone(70, 0.2, "triangle", 0.03, 35);
-            playNoise(0.1, 0.03, "lowpass", 400, 2);
+            // Subacuático, sonido burbujeante de cavitación y lanzamiento ahogado
+            playKickSound(60, 0.6, 0.05);
+            playNoise(0.7, 0.03, "lowpass", 300, 2, 50);
+            playFM(100, 20, 50, 0.9, "triangle", 0.03, 40);
             break;
+
         case "guided_missile":
-            playFM(180, 40, 80, 0.15, "sawtooth", 0.035, 80);
-            playTone(90, 0.18, "triangle", 0.025, 50);
-            playNoise(0.08, 0.025, "lowpass", 500, 3);
+            // Ignición inicial rápida seguida del siseo del propulsor alejándose
+            playKickSound(200, 0.08, 0.03); // Pop de salida
+            playNoise(0.7, 0.035, "bandpass", 1500, 1.2, 300); // Propulsor alejándose (barrido grave)
+            playTone(300, 0.6, "sawtooth", 0.015, 60); // Resonancia del motor
             break;
+
         default:
             playFM(880, 280, 240, 0.05, "square", 0.035, 1600);
     }
@@ -270,13 +247,15 @@ export function playWeaponSound(weapon: string): void {
 
 export function playImpactSound(strong = false): void {
     if (strong) {
-        playNoise(0.06, 0.04, "lowpass", 800, 2);
-        playKickSound(260, 0.12, 0.03);
-        playFM(260, 80, 120, 0.06, "square", 0.025, 100);
+        // Impacto estructural: transitorio alto seguido de retumbo profundo
+        playNoise(0.5, 0.04, "lowpass", 1000, 1, 200);
+        playKickSound(90, 0.4, 0.06);
+        playFM(200, 50, 100, 0.3, "sawtooth", 0.02, 40); // Crujido del metal
     } else {
-        playNoise(0.04, 0.018, "bandpass", 1200, 3);
-        playKickSound(420, 0.06, 0.015);
-        playTone(420, 0.03, "square", 0.012, 260);
+        // Rebote o desvío de blindaje (Ricochet)
+        playNoise(0.15, 0.03, "highpass", 4000, 2, 800);
+        playTone(1800, 0.15, "triangle", 0.025, 400); // El famoso "piiiing"
+        playKickSound(400, 0.06, 0.015);
     }
 }
 
@@ -285,54 +264,58 @@ export function playExplosionSound(): void {
     if (!ctxAudio || !masterCompressor) return;
     const now = ctxAudio.currentTime;
 
+    // 1. Transitorio (El "Snap" inicial agudo)
+    playNoise(0.1, 0.05, "highpass", 2000, 1, 800);
+
+    // 2. Cuerpo de la explosión (Ruido de paso bajo que pierde energía)
     const source = ctxAudio.createBufferSource();
     const amp = ctxAudio.createGain();
     const filter = ctxAudio.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.setValueAtTime(3000, now);
-    filter.frequency.exponentialRampToValueAtTime(60, now + 0.45);
-    filter.Q.value = 1.5;
+    filter.frequency.setValueAtTime(3500, now);
+    filter.frequency.exponentialRampToValueAtTime(100, now + 0.6); // Barrido clásico de explosión acústica
+    filter.Q.value = 1.2;
+
     source.buffer = getNoiseBuffer(ctxAudio);
     amp.gain.setValueAtTime(0, now);
-    amp.gain.linearRampToValueAtTime(0.2, now + 0.005);
-    amp.gain.setValueAtTime(0.2, now + 0.03);
-    amp.gain.linearRampToValueAtTime(0.15, now + 0.06);
-    amp.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    amp.gain.linearRampToValueAtTime(0.18, now + 0.005);
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + 0.7); // Caída natural no lineal
+
     source.connect(filter);
     filter.connect(amp);
     amp.connect(masterCompressor);
     source.start(now);
-    source.stop(now + 0.5);
+    source.stop(now + 0.7);
 
-    const source2 = ctxAudio.createBufferSource();
-    const amp2 = ctxAudio.createGain();
-    const filter2 = ctxAudio.createBiquadFilter();
-    filter2.type = "highpass";
-    filter2.frequency.setValueAtTime(4000, now);
-    filter2.frequency.exponentialRampToValueAtTime(200, now + 0.2);
-    filter2.Q.value = 2;
-    source2.buffer = getNoiseBuffer(ctxAudio);
-    amp2.gain.setValueAtTime(0, now);
-    amp2.gain.linearRampToValueAtTime(0.06, now + 0.002);
-    amp2.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
-    source2.connect(filter2);
-    filter2.connect(amp2);
-    amp2.connect(masterCompressor);
-    source2.start(now);
-    source2.stop(now + 0.2);
-
+    // 3. Sub-Rumble Caótico (Modulación de Amplitud para simular el retumbe orgánico)
     const osc = ctxAudio.createOscillator();
-    const amp3 = ctxAudio.createGain();
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(72, now);
-    osc.frequency.exponentialRampToValueAtTime(18, now + 0.4);
-    amp3.gain.setValueAtTime(0, now);
-    amp3.gain.linearRampToValueAtTime(0.04, now + 0.003);
-    amp3.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-    osc.connect(amp3);
-    amp3.connect(masterCompressor);
+    const ampRumble = ctxAudio.createGain();
+    const lfo = ctxAudio.createOscillator(); // Genera vibración (tremolo) en el sub-grave
+    const lfoGain = ctxAudio.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(120, now);
+    osc.frequency.exponentialRampToValueAtTime(30, now + 0.8); // Caída pesada
+
+    ampRumble.gain.setValueAtTime(0, now);
+    ampRumble.gain.linearRampToValueAtTime(0.08, now + 0.05); // Tarda un poquito en alcanzar su pico
+    ampRumble.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+
+    lfo.type = "sine";
+    lfo.frequency.setValueAtTime(15, now); // Retumba a 15 hz
+    lfo.frequency.exponentialRampToValueAtTime(5, now + 0.8); // El retumbe se hace más lento al disiparse
+
+    lfoGain.gain.value = 1;
+
+    // LFO controla la amplitud
+    lfo.connect(ampRumble.gain);
+    osc.connect(ampRumble);
+    ampRumble.connect(masterCompressor);
+
+    lfo.start(now);
     osc.start(now);
-    osc.stop(now + 0.45);
+    osc.stop(now + 0.8);
+    lfo.stop(now + 0.8);
 }
 
 export function playObjectiveSound(): void {
@@ -390,8 +373,8 @@ export function playObjectiveSound(): void {
 
 if (typeof window !== "undefined") {
     document.addEventListener("visibilitychange", () => {
-        if (document.hidden) audioCtx?.suspend().catch(() => {});
-        else audioCtx?.resume().catch(() => {});
+        if (document.hidden) audioCtx?.suspend().catch(() => { });
+        else audioCtx?.resume().catch(() => { });
     });
     const init = () => { ensureAudio(); cleanup(); };
     window.addEventListener("click", init, { once: true });

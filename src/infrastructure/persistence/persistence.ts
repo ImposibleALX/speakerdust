@@ -101,11 +101,12 @@ class ShipSerializer {
     ship.armor = coerceNumber(r.armor, stats.armorMax);
     ship.shield = coerceNumber(r.shield, stats.shieldMax);
     ship.shieldRegenDelay = coerceNumber(r.shieldRegenDelay, 0);
-    if (Array.isArray(r.turretMounts)) {
-      for (let i = 0; i < Math.min(r.turretMounts.length, ship.turretMounts.length); i++) {
-        const rm = r.turretMounts[i];
+    const rawTurrets = r.turrets || r.turretMounts;
+    if (Array.isArray(rawTurrets)) {
+      for (let i = 0; i < Math.min(rawTurrets.length, ship.turrets.length); i++) {
+        const rm = rawTurrets[i];
         if (!rm) continue;
-        const sm = ship.turretMounts[i]!;
+        const sm = ship.turrets[i]!;
         sm.cooldown = coerceNumber(rm.cooldown, 0);
         sm.heat = coerceNumber(rm.heat, 0);
         sm.enabled = coerceBool(rm.enabled, true);
